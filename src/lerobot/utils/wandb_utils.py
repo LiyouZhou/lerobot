@@ -67,7 +67,7 @@ class WandBLogger:
         self._group = cfg_to_group(cfg)
 
         # Set up WandB.
-        os.environ["WANDB_SILENT"] = "True"
+        os.environ["WANDB_SILENT"] = "False"
         import wandb
 
         wandb_run_id = (
