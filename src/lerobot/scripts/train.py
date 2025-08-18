@@ -133,7 +133,7 @@ def train(rank: int, cfg: TrainPipelineConfig):
     cfg.validate()
     logging.info(pformat(cfg.to_dict()))
 
-    if cfg.wandb.enable and cfg.wandb.project:
+    if rank == 0 and cfg.wandb.enable and cfg.wandb.project:
         wandb_logger = WandBLogger(cfg)
     else:
         wandb_logger = None
@@ -246,7 +246,7 @@ def train(rank: int, cfg: TrainPipelineConfig):
     )
 
     logging.info("Start offline training on a fixed dataset")
-    for _ in trange(step, cfg.steps):
+    for _ in trange(step, cfg.steps, disable=rank != 0, desc="Training steps"):
         start_time = time.perf_counter()
         batch = next(dl_iter)
         train_tracker.dataloading_s = time.perf_counter() - start_time
@@ -275,7 +275,7 @@ def train(rank: int, cfg: TrainPipelineConfig):
         is_saving_step = step % cfg.save_freq == 0 or step == cfg.steps
         is_eval_step = cfg.eval_freq > 0 and step % cfg.eval_freq == 0
 
-        if is_log_step:
+        if rank == 0 and is_log_step:
             logging.info(train_tracker)
             if wandb_logger:
                 wandb_log_dict = train_tracker.to_dict()
