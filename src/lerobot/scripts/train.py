@@ -59,16 +59,18 @@ from lerobot.utils.wandb_utils import WandBLogger
 from tqdm import trange
 import os
 
+
 def ddp_setup(rank: int, world_size: int):
-   """
-   Args:
-       rank: Unique identifier of each process
-      world_size: Total number of processes
-   """
-   os.environ["MASTER_ADDR"] = "localhost"
-   os.environ["MASTER_PORT"] = "12355"
-   torch.cuda.set_device(rank)
-   init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    """
+    Args:
+        rank: Unique identifier of each process
+       world_size: Total number of processes
+    """
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "12355"
+    torch.cuda.set_device(rank)
+    init_process_group(backend="nccl", rank=rank, world_size=world_size)
+
 
 def update_policy(
     train_metrics: MetricsTracker,
@@ -85,7 +87,11 @@ def update_policy(
     start_time = time.perf_counter()
     # device = get_device_from_parameters(policy)
     policy.train()
-    with torch.autocast(device_type=device_type, dtype=torch.float16) if use_amp else nullcontext():
+    with (
+        torch.autocast(device_type=device_type, dtype=torch.float16)
+        if use_amp
+        else nullcontext()
+    ):
         loss, output_dict = policy(batch)
         # TODO(rcadene): policy.unnormalize_outputs(out_dict)
     grad_scaler.scale(loss).backward()
@@ -123,7 +129,7 @@ def update_policy(
     return train_metrics, output_dict
 
 
-def train(rank:int, cfg: TrainPipelineConfig):
+def train(rank: int, cfg: TrainPipelineConfig):
     cfg.validate()
     logging.info(pformat(cfg.to_dict()))
 
@@ -157,7 +163,9 @@ def train(rank:int, cfg: TrainPipelineConfig):
     eval_env = None
     if cfg.eval_freq > 0 and cfg.env is not None:
         logging.info("Creating env")
-        eval_env = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs)
+        eval_env = make_env(
+            cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs
+        )
 
     logging.info("Creating policy")
     policy = make_policy(
@@ -172,12 +180,18 @@ def train(rank:int, cfg: TrainPipelineConfig):
     step = 0  # number of policy updates (forward + backward + optim)
 
     if cfg.resume:
-        step, optimizer, lr_scheduler = load_training_state(cfg.checkpoint_path, optimizer, lr_scheduler)
+        step, optimizer, lr_scheduler = load_training_state(
+            cfg.checkpoint_path, optimizer, lr_scheduler
+        )
 
-    num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
+    num_learnable_params = sum(
+        p.numel() for p in policy.parameters() if p.requires_grad
+    )
     num_total_params = sum(p.numel() for p in policy.parameters())
 
-    logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
+    logging.info(
+        colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}"
+    )
     if cfg.env is not None:
         logging.info(f"{cfg.env.task=}")
     logging.info(f"{cfg.steps=} ({format_big_number(cfg.steps)})")
@@ -224,7 +238,11 @@ def train(rank:int, cfg: TrainPipelineConfig):
     }
 
     train_tracker = MetricsTracker(
-        cfg.batch_size, dataset.num_frames, dataset.num_episodes, train_metrics, initial_step=step
+        cfg.batch_size,
+        dataset.num_frames,
+        dataset.num_episodes,
+        train_metrics,
+        initial_step=step,
     )
 
     logging.info("Start offline training on a fixed dataset")
@@ -246,7 +264,7 @@ def train(rank:int, cfg: TrainPipelineConfig):
             grad_scaler=grad_scaler,
             lr_scheduler=lr_scheduler,
             use_amp=cfg.policy.use_amp,
-            device_type=device_type
+            device_type=device_type,
         )
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
@@ -269,7 +287,9 @@ def train(rank:int, cfg: TrainPipelineConfig):
         if rank == 0 and cfg.save_checkpoint and is_saving_step:
             logging.info(f"Checkpoint policy after step {step}")
             checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, step)
-            save_checkpoint(checkpoint_dir, step, cfg, policy.module, optimizer, lr_scheduler)
+            save_checkpoint(
+                checkpoint_dir, step, cfg, policy.module, optimizer, lr_scheduler
+            )
             update_last_checkpoint(checkpoint_dir)
             if wandb_logger:
                 wandb_logger.log_policy(checkpoint_dir)
@@ -279,7 +299,11 @@ def train(rank:int, cfg: TrainPipelineConfig):
             logging.info(f"Eval policy at step {step}")
             with (
                 torch.no_grad(),
-                torch.autocast(device_type=device_type) if cfg.policy.use_amp else nullcontext(),
+                (
+                    torch.autocast(device_type=device_type)
+                    if cfg.policy.use_amp
+                    else nullcontext()
+                ),
             ):
                 eval_info = eval_policy(
                     eval_env,
@@ -296,7 +320,11 @@ def train(rank:int, cfg: TrainPipelineConfig):
                 "eval_s": AverageMeter("eval_s", ":.3f"),
             }
             eval_tracker = MetricsTracker(
-                cfg.batch_size, dataset.num_frames, dataset.num_episodes, eval_metrics, initial_step=step
+                cfg.batch_size,
+                dataset.num_frames,
+                dataset.num_episodes,
+                eval_metrics,
+                initial_step=step,
             )
             eval_tracker.eval_s = eval_info["aggregated"].pop("eval_s")
             eval_tracker.avg_sum_reward = eval_info["aggregated"].pop("avg_sum_reward")
@@ -330,8 +358,9 @@ def launch_train_ddp(rank, world_size, cfg):
 
 @parser.wrap()
 def main(cfg: TrainPipelineConfig):
-   world_size = torch.cuda.device_count()
-   mp.spawn(launch_train_ddp, args=(world_size, cfg), nprocs=world_size, join=True)
+    world_size = torch.cuda.device_count()
+    mp.spawn(launch_train_ddp, args=(world_size, cfg), nprocs=world_size, join=True)
+
 
 if __name__ == "__main__":
     main()
