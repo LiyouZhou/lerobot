@@ -23,6 +23,11 @@ import torch
 from termcolor import colored
 from torch.amp import GradScaler
 from torch.optim import Optimizer
+import torch.nn.functional as F
+import torch.multiprocessing as mp
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group
 
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
@@ -52,11 +57,22 @@ from lerobot.utils.utils import (
 )
 from lerobot.utils.wandb_utils import WandBLogger
 from tqdm import trange
+import os
 
+def ddp_setup(rank: int, world_size: int):
+   """
+   Args:
+       rank: Unique identifier of each process
+      world_size: Total number of processes
+   """
+   os.environ["MASTER_ADDR"] = "localhost"
+   os.environ["MASTER_PORT"] = "12355"
+   torch.cuda.set_device(rank)
+   init_process_group(backend="nccl", rank=rank, world_size=world_size)
 
 def update_policy(
     train_metrics: MetricsTracker,
-    policy: PreTrainedPolicy,
+    policy: PreTrainedPolicy | DDP,
     batch: Any,
     optimizer: Optimizer,
     grad_clip_norm: float,
@@ -64,12 +80,13 @@ def update_policy(
     lr_scheduler=None,
     use_amp: bool = False,
     lock=None,
+    device_type: str = "cuda",
 ) -> tuple[MetricsTracker, dict]:
     start_time = time.perf_counter()
-    device = get_device_from_parameters(policy)
+    # device = get_device_from_parameters(policy)
     policy.train()
-    with torch.autocast(device_type=device.type) if use_amp else nullcontext():
-        loss, output_dict = policy.forward(batch)
+    with torch.autocast(device_type=device_type, dtype=torch.float16) if use_amp else nullcontext():
+        loss, output_dict = policy(batch)
         # TODO(rcadene): policy.unnormalize_outputs(out_dict)
     grad_scaler.scale(loss).backward()
 
@@ -106,8 +123,7 @@ def update_policy(
     return train_metrics, output_dict
 
 
-@parser.wrap()
-def train(cfg: TrainPipelineConfig):
+def train(rank:int, cfg: TrainPipelineConfig):
     cfg.validate()
     logging.info(pformat(cfg.to_dict()))
 
@@ -122,6 +138,13 @@ def train(cfg: TrainPipelineConfig):
 
     # Check device is available
     device = get_safe_torch_device(cfg.policy.device, log=True)
+    device_type = device.type
+
+    if torch.cuda.is_available() and device_type == "cuda":
+        torch.cuda.set_device(rank)
+        device = rank
+        device_type = "cuda"
+
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -144,7 +167,7 @@ def train(cfg: TrainPipelineConfig):
 
     logging.info("Creating optimizer and scheduler")
     optimizer, lr_scheduler = make_optimizer_and_scheduler(cfg, policy)
-    grad_scaler = GradScaler(device.type, enabled=cfg.policy.use_amp)
+    grad_scaler = GradScaler(device_type, enabled=cfg.policy.use_amp)
 
     step = 0  # number of policy updates (forward + backward + optim)
 
@@ -175,17 +198,21 @@ def train(cfg: TrainPipelineConfig):
         shuffle = True
         sampler = None
 
+    sampler = DistributedSampler(dataset)
+    shuffle = False
+
     dataloader = torch.utils.data.DataLoader(
         dataset,
         num_workers=cfg.num_workers,
         batch_size=cfg.batch_size,
         shuffle=shuffle,
         sampler=sampler,
-        pin_memory=device.type == "cuda",
+        pin_memory=device_type == "cuda",
         drop_last=False,
     )
     dl_iter = cycle(dataloader)
 
+    policy = DDP(policy, device_ids=[device])
     policy.train()
 
     train_metrics = {
@@ -208,7 +235,7 @@ def train(cfg: TrainPipelineConfig):
 
         for key in batch:
             if isinstance(batch[key], torch.Tensor):
-                batch[key] = batch[key].to(device, non_blocking=device.type == "cuda")
+                batch[key] = batch[key].to(device, non_blocking=device_type == "cuda")
 
         train_tracker, output_dict = update_policy(
             train_tracker,
@@ -219,6 +246,7 @@ def train(cfg: TrainPipelineConfig):
             grad_scaler=grad_scaler,
             lr_scheduler=lr_scheduler,
             use_amp=cfg.policy.use_amp,
+            device_type=device_type
         )
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
@@ -238,20 +266,20 @@ def train(cfg: TrainPipelineConfig):
                 wandb_logger.log_dict(wandb_log_dict, step)
             train_tracker.reset_averages()
 
-        if cfg.save_checkpoint and is_saving_step:
+        if rank == 0 and cfg.save_checkpoint and is_saving_step:
             logging.info(f"Checkpoint policy after step {step}")
             checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, step)
-            save_checkpoint(checkpoint_dir, step, cfg, policy, optimizer, lr_scheduler)
+            save_checkpoint(checkpoint_dir, step, cfg, policy.module, optimizer, lr_scheduler)
             update_last_checkpoint(checkpoint_dir)
             if wandb_logger:
                 wandb_logger.log_policy(checkpoint_dir)
 
-        if cfg.env and is_eval_step:
+        if rank == 0 and cfg.env and is_eval_step:
             step_id = get_step_identifier(step, cfg.steps)
             logging.info(f"Eval policy at step {step}")
             with (
                 torch.no_grad(),
-                torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext(),
+                torch.autocast(device_type=device_type) if cfg.policy.use_amp else nullcontext(),
             ):
                 eval_info = eval_policy(
                     eval_env,
@@ -287,6 +315,23 @@ def train(cfg: TrainPipelineConfig):
         policy.push_model_to_hub(cfg)
 
 
+def launch_train_ddp(rank, world_size, cfg):
+    print(f"my rank is {rank} / {world_size}")
+
+    try:
+        ddp_setup(rank, world_size)
+        init_logging()
+        train(rank, cfg)
+    except Exception as e:
+        logging.error(f"Error occurred in DDP process {rank}: {e}")
+    finally:
+        destroy_process_group()
+
+
+@parser.wrap()
+def main(cfg: TrainPipelineConfig):
+   world_size = torch.cuda.device_count()
+   mp.spawn(launch_train_ddp, args=(world_size, cfg), nprocs=world_size, join=True)
+
 if __name__ == "__main__":
-    init_logging()
-    train()
+    main()
