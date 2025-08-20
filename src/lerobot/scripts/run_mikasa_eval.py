@@ -65,22 +65,12 @@ def save_rollout_video(rollout_images, idx, success, task_description, log_file=
         .replace(".", "_")[:50]
     )
     mp4_path = f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
-    # video_writer = imageio.get_writer(mp4_path, fps=30)
-    # for img in rollout_images:
-    #     video_writer.append_data(img)
-    # video_writer.close()
     rollout_images = torch.stack(rollout_images)
     print("rollout_images", rollout_images.shape)
     write_video(mp4_path, rollout_images, fps=30)
     print(f"Saved rollout MP4 at path {mp4_path}")
     if log_file is not None:
         log_file.write(f"Saved rollout MP4 at path {mp4_path}\n")
-
-    # for i, img in enumerate(rollout_images):
-    #     imageio.imwrite(
-    #         f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}--frame={i}.png",
-    #         img,
-    #     )
 
     return mp4_path
 
@@ -261,28 +251,10 @@ def infer_batch(images, prompts, model, processor, unnorm_key, crop_scale=0.9):
     batch_size = len(images)
     assert len(prompts) == batch_size, "Number of prompts must match number of images!"
 
-    # prompts = [
-    #     f"In: What action should the robot take to {prompt.lower()}?\nOut:"
-    #     for prompt in prompts
-    # ]
-
-    # Center crop images if necessary
-    # if crop_scale < 1 and crop_scale > 0:
-    #     images = [
-    #         center_crop(image, crop_scale=crop_scale, return_pil_image=True)
-    #         for image in images
-    #     ]
-
-
-    # Process inputs.
-    # input = processor(prompts, images, padding=True).to("cuda", dtype=torch.bfloat16)
-
-    # Get action.
     device = torch.cuda.current_device()
     inputs = {
         "task": prompts
     }
-    # images = torch.tensor(images, device=device)
     images = (images / 255.0).clip(0, 1)  # Ensure image is in [0, 1] range
     images = einops.rearrange(images, "b h w c -> b c h w")
     inputs["observation.images.image"] = images
@@ -326,23 +298,6 @@ def eval_mikasa(cfg: GenerateConfig) -> None:
     model = get_model(cfg)
     processor = None
 
-    # [OpenVLA] Get Hugging Face processor
-    # processor = None
-    # if cfg.model_family == "openvla":
-    #     processor = get_processor(cfg)
-    #     action_tokenizer = ActionTokenizer(processor.tokenizer)
-    #     batch_transform = RLDSBatchTransform(
-    #         action_tokenizer,
-    #         processor.tokenizer,
-    #         image_transform=processor.image_processor.apply_transform,
-    #         prompt_builder_fn=PurePromptBuilder,
-    #     )
-    #     collator = PaddedCollatorForActionPrediction(
-    #         processor.tokenizer.model_max_length,
-    #         processor.tokenizer.pad_token_id,
-    #         padding_side="right",
-    #     )
-
     # Initialize local logging
     run_id = f"EVAL-{cfg.task_suite_name}-{cfg.model_family}-{DATE_TIME}"
     if cfg.run_id_note is not None:
@@ -385,11 +340,6 @@ def eval_mikasa(cfg: GenerateConfig) -> None:
             reward_mode="normalized_dense",
         )
         unnorm_key = ""  # Action un-normalization key for OpenVLA
-
-        # [OpenVLA] Check that the model contains the action un-normalization key
-        # assert (
-        #     unnorm_key in model.norm_stats
-        # ), f"Action un-norm key {unnorm_key} not found in VLA `norm_stats`! valid keys: {model.norm_stats.keys()}"
 
         env = gym.make(env_name, **env_kwargs_rgb)
         state_wrappers_list, episode_timeout = env_info(env_name)
