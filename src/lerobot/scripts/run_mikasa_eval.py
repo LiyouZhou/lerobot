@@ -52,6 +52,8 @@ import plotly.graph_objects as go  # or: import plotly.graph_objs as go
 DATE = datetime.now().strftime("%Y-%m-%d")
 DATE_TIME = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
+from torchvision.io import write_video
+
 def save_rollout_video(rollout_images, idx, success, task_description, log_file=None):
     """Saves an MP4 replay of an episode."""
     rollout_dir = f"./rollouts/{DATE}"
@@ -63,19 +65,22 @@ def save_rollout_video(rollout_images, idx, success, task_description, log_file=
         .replace(".", "_")[:50]
     )
     mp4_path = f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
-    video_writer = imageio.get_writer(mp4_path, fps=30)
-    for img in rollout_images:
-        video_writer.append_data(img)
-    video_writer.close()
+    # video_writer = imageio.get_writer(mp4_path, fps=30)
+    # for img in rollout_images:
+    #     video_writer.append_data(img)
+    # video_writer.close()
+    rollout_images = torch.stack(rollout_images)
+    print("rollout_images", rollout_images.shape)
+    write_video(mp4_path, rollout_images, fps=30)
     print(f"Saved rollout MP4 at path {mp4_path}")
     if log_file is not None:
         log_file.write(f"Saved rollout MP4 at path {mp4_path}\n")
 
-    for i, img in enumerate(rollout_images):
-        imageio.imwrite(
-            f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}--frame={i}.png",
-            img,
-        )
+    # for i, img in enumerate(rollout_images):
+    #     imageio.imwrite(
+    #         f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}--frame={i}.png",
+    #         img,
+    #     )
 
     return mp4_path
 
@@ -274,23 +279,18 @@ def infer_batch(images, prompts, model, processor, unnorm_key, crop_scale=0.9):
 
     # Get action.
     device = torch.cuda.current_device()
-    actions = []
-    for i in range(batch_size):
-        inputs = {
-            "task": prompt[i]
-        }
-        image = torch.tensor(images[i], device=device)
-        image = (image / 255.0).clip(0, 1)  # Ensure image is in [0, 1] range
-        image = einops.rearrange(image, "h w c -> 1 c h w")
-        inputs["observation.images.image"] = image
-        inputs["observation.state"] = torch.zeros((1, 8), device=device)
-        with torch.no_grad():
-            action = model.select_action(batch=inputs)
+    inputs = {
+        "task": prompts
+    }
+    # images = torch.tensor(images, device=device)
+    images = (images / 255.0).clip(0, 1)  # Ensure image is in [0, 1] range
+    images = einops.rearrange(images, "b h w c -> b c h w")
+    inputs["observation.images.image"] = images
+    inputs["observation.state"] = torch.zeros((batch_size, 8), device=device)
+    with torch.no_grad():
+        actions = model.select_action(batch=inputs)
 
-        action = einops.rearrange(action, "1 c -> c")
-        actions.append(action.cpu().numpy())
-
-    actions = np.array(actions)
+    actions = actions.cpu().numpy()
 
     return actions
 
@@ -384,11 +384,7 @@ def eval_mikasa(cfg: GenerateConfig) -> None:
             sim_backend="gpu",
             reward_mode="normalized_dense",
         )
-        unnorm_key = (
-            f"mikasa_robo_tfds/{env_name}"
-            if len(cfg.unnorm_key) == 0
-            else cfg.unnorm_key
-        )  # Action un-normalization key for OpenVLA
+        unnorm_key = ""  # Action un-normalization key for OpenVLA
 
         # [OpenVLA] Check that the model contains the action un-normalization key
         # assert (
@@ -465,11 +461,10 @@ def eval_mikasa(cfg: GenerateConfig) -> None:
 
                 # Get observation image
                 images = obs["sensor_data"]["base_camera"]["rgb"]
-                images = images.cpu().numpy()
 
                 # Save preprocessed image for replay video
                 for i in range(num_envs):
-                    replay_images[i].append(images[i])
+                    replay_images[i].append(images[i].detach().clone())
 
                 # query VLA model for action
                 actions = infer_batch(
