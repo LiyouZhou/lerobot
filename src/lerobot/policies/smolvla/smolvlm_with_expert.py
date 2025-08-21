@@ -23,6 +23,7 @@ from transformers import (
     AutoProcessor,
     SmolVLMForConditionalGeneration,
 )
+from lerobot.policies.smolvla.memory.module import MemoryModule
 
 
 def apply_rope(x, positions, max_wavelength=10_000):
@@ -89,6 +90,13 @@ class SmolVLMWithExpertModel(nn.Module):
             print(f"Reducing the number of VLM layers to {num_vlm_layers} ...")
             self.get_vlm_model().text_model.layers = self.get_vlm_model().text_model.layers[:num_vlm_layers]
         self.num_vlm_layers = len(self.get_vlm_model().text_model.layers)
+
+        print(f"Creating {self.num_vlm_layers} neural memory modules of hidden_size {config.text_config.hidden_size}")
+        self.neural_memory_modules = [
+            [MemoryModule(config.text_config.hidden_size) for _ in range(self.num_vlm_layers)],
+            [None for _ in range(self.num_vlm_layers)],
+        ]
+    
         self.config = config
         # Smaller lm expert
         lm_expert_config = copy.deepcopy(config.text_config)
@@ -475,7 +483,19 @@ class SmolVLMWithExpertModel(nn.Module):
                     after_first_residual = out_emb.clone()
 
                     out_emb = layer.post_attention_layernorm(out_emb)
-                    out_emb = layer.mlp(out_emb)
+
+                    mlp_emb = layer.mlp(out_emb)
+
+                    neural_memory = self.neural_memory_modules[i][layer_idx]
+                    if neural_memory is not None:
+                        if not neural_memory.initialised:
+                            neural_memory.initialize_weights()
+                            neural_memory = neural_memory.to(out_emb.device)
+                            self.neural_memory_modules[i][layer_idx] = neural_memory
+                        mem_emb = neural_memory(out_emb)
+                        out_emb = neural_memory.memory_gate * mem_emb + (1 - neural_memory.memory_gate) * mlp_emb
+                    else:
+                        out_emb = mlp_emb
 
                     out_emb += after_first_residual
 
