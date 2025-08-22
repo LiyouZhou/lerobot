@@ -71,6 +71,7 @@ class SmolVLMWithExpertModel(nn.Module):
         num_vlm_layers: int = -1,
         self_attn_every_n_layers: int = -1,
         expert_width_multiplier: float = 0.5,
+        memory: bool = False
     ):
         super().__init__()
         if load_vlm_weights:
@@ -91,9 +92,10 @@ class SmolVLMWithExpertModel(nn.Module):
             self.get_vlm_model().text_model.layers = self.get_vlm_model().text_model.layers[:num_vlm_layers]
         self.num_vlm_layers = len(self.get_vlm_model().text_model.layers)
 
-        print(f"Creating {self.num_vlm_layers} neural memory modules of hidden_size {config.text_config.hidden_size}")
+        if memory:
+            print(f"Creating {self.num_vlm_layers} neural memory modules of hidden_size {config.text_config.hidden_size}")
         self.neural_memory_modules = [
-            [MemoryModule(config.text_config.hidden_size) for _ in range(self.num_vlm_layers)],
+            [MemoryModule(config.text_config.hidden_size) if memory else None for _ in range(self.num_vlm_layers)],
             [None for _ in range(self.num_vlm_layers)],
         ]
     

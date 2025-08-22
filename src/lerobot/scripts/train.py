@@ -212,19 +212,32 @@ def train(rank: int, cfg: TrainPipelineConfig):
         shuffle = True
         sampler = None
 
-    sampler = DistributedSampler(dataset)
-    batch_sampler = EpisodicBatchSampler(
-        repo_root=cfg.dataset.root,
-        batch_size=cfg.batch_size,
-        shuffle=shuffle,
-    )
+    if cfg.episodic:
+        logging.info(f"Training Episodically")
+        batch_sampler = EpisodicBatchSampler(
+            repo_root=cfg.dataset.root,
+            batch_size=cfg.batch_size,
+            shuffle=shuffle,
+        )
 
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        num_workers=cfg.num_workers,
-        batch_sampler=batch_sampler,
-        pin_memory=device_type == "cuda",
-    )
+        dataloader = torch.utils.data.DataLoader(
+            dataset,
+            num_workers=cfg.num_workers,
+            batch_sampler=batch_sampler,
+            pin_memory=device_type == "cuda",
+        )
+    else:
+        sampler = DistributedSampler(dataset)
+        dataloader = torch.utils.data.DataLoader(
+            dataset,
+            num_workers=cfg.num_workers,
+            batch_size=cfg.batch_size,
+            shuffle=shuffle,
+            sampler=sampler,
+            pin_memory=device_type == "cuda",
+            drop_last=False,
+        )
+
     dl_iter = cycle(dataloader)
 
     policy = DDP(policy, device_ids=[device])
