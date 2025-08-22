@@ -32,7 +32,7 @@ from torch.distributed import init_process_group, destroy_process_group
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.factory import make_dataset
-from lerobot.datasets.sampler import EpisodeAwareSampler
+from lerobot.datasets.sampler import EpisodeAwareSampler, EpisodicBatchSampler
 from lerobot.datasets.utils import cycle
 from lerobot.envs.factory import make_env
 from lerobot.optim.factory import make_optimizer_and_scheduler
@@ -167,7 +167,7 @@ def train(rank: int, cfg: TrainPipelineConfig):
             cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs
         )
 
-    logging.info("Creating policy")
+    logging.info(f"Creating policy: {cfg.policy}")
     policy = make_policy(
         cfg=cfg.policy,
         ds_meta=dataset.meta,
@@ -213,16 +213,17 @@ def train(rank: int, cfg: TrainPipelineConfig):
         sampler = None
 
     sampler = DistributedSampler(dataset)
-    shuffle = False
+    batch_sampler = EpisodicBatchSampler(
+        repo_root=cfg.dataset.root,
+        batch_size=cfg.batch_size,
+        shuffle=shuffle,
+    )
 
     dataloader = torch.utils.data.DataLoader(
         dataset,
         num_workers=cfg.num_workers,
-        batch_size=cfg.batch_size,
-        shuffle=shuffle,
-        sampler=sampler,
+        batch_sampler=batch_sampler,
         pin_memory=device_type == "cuda",
-        drop_last=False,
     )
     dl_iter = cycle(dataloader)
 
@@ -246,7 +247,7 @@ def train(rank: int, cfg: TrainPipelineConfig):
     )
 
     logging.info("Start offline training on a fixed dataset")
-    for _ in trange(step, cfg.steps, disable=rank != 0, desc="Training steps"):
+    for _ in trange(step, cfg.steps, position=rank, desc=f"Rank {rank}"):
         start_time = time.perf_counter()
         batch = next(dl_iter)
         train_tracker.dataloading_s = time.perf_counter() - start_time

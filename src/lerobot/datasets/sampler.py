@@ -14,7 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from collections.abc import Iterator
+from pathlib import Path
+import pandas as pd
+import numpy as np
 
+from torch.utils.data import Sampler
 import torch
 
 
@@ -43,7 +47,10 @@ class EpisodeAwareSampler:
         ):
             if episode_indices_to_use is None or episode_idx in episode_indices_to_use:
                 indices.extend(
-                    range(start_index.item() + drop_n_first_frames, end_index.item() - drop_n_last_frames)
+                    range(
+                        start_index.item() + drop_n_first_frames,
+                        end_index.item() - drop_n_last_frames,
+                    )
                 )
 
         self.indices = indices
@@ -59,3 +66,78 @@ class EpisodeAwareSampler:
 
     def __len__(self) -> int:
         return len(self.indices)
+
+
+class EpisodicBatchSampler(Sampler):
+    def __init__(self, repo_root, batch_size, shuffle=True):
+        self.repo_root = repo_root
+        self.dataset_index_df = pd.read_csv(Path(repo_root) / "dataset_index.csv")
+
+        self.task_info = {}
+        self.episode_counts = []
+        for task_index in self.dataset_index_df["task_index"].unique():
+            task_df = self.dataset_index_df[
+                self.dataset_index_df["task_index"] == task_index
+            ]
+            episode_count = len(task_df["episode_index"].value_counts())
+
+            max_frame_index = task_df["frame_index"].max()
+            episode_length = max_frame_index + 1
+
+            self.episode_counts.append((task_index, episode_count, episode_length))
+            self.task_info[task_index] = {
+                "episode_count": episode_count,
+                "episode_length": episode_length,
+            }
+
+            assert (
+                task_df.groupby("episode_index")["frame_index"].nunique().nunique() == 1
+            ), f"Task {task_index} has episodes of varying lengths"
+
+        # Extract task indices and their episode counts
+        self.task_indices = [t[0] for t in self.episode_counts]
+        self.episode_counts_list = [t[1] for t in self.episode_counts]
+
+        self.batch_size = batch_size
+
+    def __iter__(self):
+        for _ in range(len(self.dataset_index_df) // self.batch_size):
+            # Sample a task index with probability proportional to episode count
+            sampled_task_index = np.random.choice(
+                self.task_indices,
+                p=np.array(self.episode_counts_list) / np.sum(self.episode_counts_list),
+            )
+
+            # Filter the dataframe for the sampled task index
+            task_df = self.dataset_index_df[
+                self.dataset_index_df["task_index"] == sampled_task_index
+            ]
+
+            # Get all unique episode indices for this task
+            episode_indices = task_df["episode_index"].unique()
+
+            # Sample batch_size episodes index uniformly
+            sampled_episode_indices = np.random.choice(
+                episode_indices, size=self.batch_size, replace=True
+            )
+
+            episode_length = self.task_info[sampled_task_index]["episode_length"]
+            for frame_index in range(episode_length):
+                all_indices = []
+                for sampled_episode_index in sampled_episode_indices:
+                    # Get all indices for the sampled episode within the 
+                    # sampled task at the current frame index
+                    episode_indices_df = task_df[
+                        task_df["episode_index"] == sampled_episode_index
+                    ]
+                    sample = episode_indices_df[
+                        episode_indices_df["frame_index"] == frame_index
+                    ]
+                    assert (
+                        len(sample) == 1
+                    ), f"Expected one sample for episode {sampled_episode_index} at frame {frame_index}, got {len(sample)}"
+                    all_indices.extend(sample["index"].tolist())
+                yield all_indices
+
+    def __len__(self):
+        return len(self.dataset_index_df)
