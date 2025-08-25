@@ -24,6 +24,7 @@ from transformers import (
     SmolVLMForConditionalGeneration,
 )
 from lerobot.policies.smolvla.memory.module import MemoryModule
+import wandb
 
 
 def apply_rope(x, positions, max_wavelength=10_000):
@@ -141,6 +142,8 @@ class SmolVLMWithExpertModel(nn.Module):
         self.attention_mode = attention_mode
         self.expert_hidden_size = lm_expert_config.hidden_size
         self.set_requires_grad()
+
+        self.step_counter = 0
 
     def reset_memory(self):
         for i in range(len(self.neural_memory_modules)):
@@ -509,6 +512,14 @@ class SmolVLMWithExpertModel(nn.Module):
 
                     outputs_embeds.append(out_emb)
 
+                    mse = nn.functional.mse_loss(out_emb, mlp_emb).item()
+                    gate_mag = neural_memory.memory_gate.abs().mean().item() if neural_memory is not None else 0.0
+                    wandb.log({
+                        f"memory_gate_magnitude/layer_{i}_{layer_idx}": gate_mag,
+                        f"mse_out_emb_vs_mlp_emb/layer_{i}_{layer_idx}": mse,
+                        "steps": self.step_counter
+                    })
+
                     start = end if len(att_outputs) == 1 else 0
                 else:
                     outputs_embeds.append(None)
@@ -523,6 +534,9 @@ class SmolVLMWithExpertModel(nn.Module):
                 outputs_embeds.append(out_emb)
             else:
                 outputs_embeds.append(None)
+
+        self.step_counter += 1
+
         return outputs_embeds, past_key_values
 
     def get_attention_interface(self):
