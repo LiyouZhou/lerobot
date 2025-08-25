@@ -142,6 +142,12 @@ class SmolVLMWithExpertModel(nn.Module):
         self.expert_hidden_size = lm_expert_config.hidden_size
         self.set_requires_grad()
 
+    def reset_memory(self):
+        for i in range(len(self.neural_memory_modules)):
+            for layer in self.neural_memory_modules[i]:
+                if layer is not None:
+                    layer.reset_memory()
+
     def get_vlm_model(self):
         return self.vlm.model
 

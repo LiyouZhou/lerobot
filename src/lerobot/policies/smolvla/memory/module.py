@@ -30,6 +30,9 @@ class MemoryModule(nn.Module):
             nn.init.xavier_uniform_(p)
         self.initialised = True
 
+    def reset_memory(self):
+        self.current_M = None
+
     def forward(self, x: torch.Tensor, reset_memory: bool = False) -> torch.Tensor:
         
         B, L, D = x.shape # step: [batch_size, sequence_length, hidden_size]

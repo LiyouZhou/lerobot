@@ -75,7 +75,8 @@ def ddp_setup(rank: int, world_size: int):
 def update_policy(
     train_metrics: MetricsTracker,
     policy: PreTrainedPolicy | DDP,
-    batch: Any,
+    dl_iter: Any,
+    device: torch.device,
     optimizer: Optimizer,
     grad_clip_norm: float,
     grad_scaler: GradScaler,
@@ -83,6 +84,7 @@ def update_policy(
     use_amp: bool = False,
     lock=None,
     device_type: str = "cuda",
+    num_accumulation_steps: int = 1
 ) -> tuple[MetricsTracker, dict]:
     start_time = time.perf_counter()
     # device = get_device_from_parameters(policy)
@@ -92,9 +94,25 @@ def update_policy(
         if use_amp
         else nullcontext()
     ):
-        loss, output_dict = policy(batch)
-        # TODO(rcadene): policy.unnormalize_outputs(out_dict)
-    grad_scaler.scale(loss).backward()
+        loss_accumulated = 0
+        for i in range(num_accumulation_steps):
+            start_time = time.perf_counter()
+            batch = next(dl_iter)
+            train_metrics.dataloading_s = time.perf_counter() - start_time
+
+            for key in batch:
+                if isinstance(batch[key], torch.Tensor):
+                    batch[key] = batch[key].to(device, non_blocking=device_type == "cuda")
+
+            # assert batch["frame_index"].shape[0] == 1, "Batch size must be 1"
+
+            if batch["frame_index"][0].cpu().tolist() == 0:
+                policy.module.model.vlm_with_expert.reset_memory()
+            loss, output_dict = policy(batch)
+            loss_accumulated += loss
+            # TODO(rcadene): policy.unnormalize_outputs(out_dict)
+
+    grad_scaler.scale(loss_accumulated).backward()
 
     # Unscale the gradient of the optimizer's assigned params in-place **prior to gradient clipping**.
     grad_scaler.unscale_(optimizer)
@@ -261,18 +279,12 @@ def train(rank: int, cfg: TrainPipelineConfig):
 
     logging.info("Start offline training on a fixed dataset")
     for _ in trange(step, cfg.steps, position=rank, desc=f"Rank {rank}"):
-        start_time = time.perf_counter()
-        batch = next(dl_iter)
-        train_tracker.dataloading_s = time.perf_counter() - start_time
-
-        for key in batch:
-            if isinstance(batch[key], torch.Tensor):
-                batch[key] = batch[key].to(device, non_blocking=device_type == "cuda")
 
         train_tracker, output_dict = update_policy(
             train_tracker,
             policy,
-            batch,
+            dl_iter,
+            device,
             optimizer,
             cfg.optimizer.grad_clip_norm,
             grad_scaler=grad_scaler,
