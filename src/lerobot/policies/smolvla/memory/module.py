@@ -1,25 +1,30 @@
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple
+from einops import repeat, rearrange
 
 from transformers.models.llama.modeling_llama import LlamaMLP, LlamaDecoderLayer
 
 import torch.nn.functional as F
 
+
 class Memory(LlamaMLP):
     def __init__(self, config):
         super().__init__(config)
+
 
 class MemoryModule(nn.Module):
     def __init__(self, hidden_size, local_update_lr: float = 1e-4):
         super().__init__()
         D = hidden_size
-        self.M   = nn.Parameter(torch.empty(D, D))
+        self.M = nn.Parameter(torch.empty(D, D))
         self.w_k = nn.Parameter(torch.empty(D, D))
         self.w_v = nn.Parameter(torch.empty(D, D))
         self.w_q = nn.Parameter(torch.empty(D, D))
 
-        self.local_update_lr = nn.Parameter(torch.tensor(local_update_lr)) # wrap in nn.Parameter to make it trainable
+        self.local_update_lr = nn.Parameter(
+            torch.tensor(local_update_lr)
+        )  # wrap in nn.Parameter to make it trainable
         self.memory_gate = nn.Parameter(torch.zeros(hidden_size))
 
         self.initialised = False
@@ -34,38 +39,46 @@ class MemoryModule(nn.Module):
         self.current_M = None
 
     def forward(self, x: torch.Tensor, reset_memory: bool = False) -> torch.Tensor:
-        
-        B, L, D = x.shape # step: [batch_size, sequence_length, hidden_size]
+
+        B, L, _ = x.shape  # step: [batch_size, embed_length, hidden_size]
 
         # 1) run all inner‐loop math in half precision
-        with torch.amp.autocast(device_type='cuda', enabled=True, dtype=torch.float16):
-            x_flat = x.view(B * L, D)
+        with torch.amp.autocast(device_type="cuda", enabled=True, dtype=torch.float16):
+            x_flat = rearrange(x, "b l d -> (b l) d")  # [B * L, D]
 
-            K = x_flat @ self.w_k.t()
-            V = x_flat @ self.w_v.t()
+            K = x_flat @ self.w_k.t()  # [B * L, D]
+            V = x_flat @ self.w_v.t()  # [B * L, D]
 
             # Initialize or use current memory state
             if self.current_M is None:
                 # Don't detach here - we want gradients to flow back to self.M
-                self.current_M = self.M.clone().requires_grad_(True)
+                # for each sample in the batch, create a [D, D] memory matrix initialised by self.M
+                self.current_M = repeat(self.M, "d1 d2 -> b d1 d2", b=B).requires_grad_(
+                    True
+                )  # [B, D, D]
             else:
-                self.current_M = self.current_M.detach().clone().requires_grad_(True)
+                self.current_M = (
+                    self.current_M.detach().clone().requires_grad_(True)
+                )  # [B, D, D]
 
             # inner‐loop loss & gradient wrt current_M (first-order)
-            pred    = K @ self.current_M.t()
+            K = rearrange(K, "(b l) d -> b l d", l=L)  # [B, L, D]
+            pred = torch.bmm(K, self.current_M)  # [B, L, D]
+            pred = rearrange(pred, "b l d -> (b l) d")  # [B * L, D]
             inner_l = F.mse_loss(pred, V)
-            (gM,)   = torch.autograd.grad(inner_l, self.current_M, create_graph=False)
+            (gM,) = torch.autograd.grad(inner_l, self.current_M, create_graph=False)
 
             # one gradient step on current_M (detach to prevent second-order gradients)
             self.current_M = self.current_M - self.local_update_lr * gM.detach()
 
             # retrieval with the adapted memory
-            Q        = x_flat @ self.w_q.t()
-            out_flat = Q @ self.current_M.t()
-            out_half = out_flat.view(B, L, D)
+            Q = x_flat @ self.w_q.t()  # [B * L, D]
+            Q = rearrange(Q, "(b l) d -> b l d", l=L)  # [B, L, D]
+            out_half = torch.bmm(Q, self.current_M)  # [B, L, D]
 
         # 2) cast back to original input dtype
         return out_half.to(x.dtype)
+
 
 class MemoryLlamaDecoderLayer(LlamaDecoderLayer):
     def __init__(self, config, layer_idx, memory_enabled: bool = True):
@@ -80,12 +93,12 @@ class MemoryLlamaDecoderLayer(LlamaDecoderLayer):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor]    = None,
-        position_ids:   Optional[torch.LongTensor]= None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: bool = False,
-        use_cache:         bool = False,
-        cache_position:    torch.LongTensor = None,
+        use_cache: bool = False,
+        cache_position: torch.LongTensor = None,
         **kwargs,
     ):
         # --- self-attention as before ---
@@ -107,7 +120,9 @@ class MemoryLlamaDecoderLayer(LlamaDecoderLayer):
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
 
-        hidden_states = self.memory_gate * self.neural_memory(hidden_states) + (1 - self.memory_gate) * self.mlp(hidden_states)
+        hidden_states = self.memory_gate * self.neural_memory(hidden_states) + (
+            1 - self.memory_gate
+        ) * self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
         # --- pack outputs ---
@@ -118,22 +133,25 @@ class MemoryLlamaDecoderLayer(LlamaDecoderLayer):
             outputs += (present,)
 
         return outputs
-    
+
+
 if __name__ == "__main__":
     memory = MemoryModule(hidden_size=1024)
     optimizer = torch.optim.Adam(memory.parameters(), lr=1e-4)
 
     for iteration in range(1000):
-        x = torch.randn(16, 20, 300, 1024)  # [episodes in batch, steps in episode, features]
+        x = torch.randn(
+            16, 20, 300, 1024
+        )  # [episodes in batch, steps in episode, features]
         outputs = []
-        
+
         # Reset memory at the start of each batch
         memory.current_M = None
-        
+
         for step in range(x.shape[1]):  # iterate through the steps in the episodes
             out = memory(x[:, step, :, :])
             outputs.append(out)
-            
+
         # Stack outputs along the step dimension
         outputs = torch.stack(outputs, dim=1)
         loss = F.mse_loss(outputs, x)
