@@ -40,6 +40,7 @@ from lerobot.policies.factory import make_policy
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.utils import get_device_from_parameters
 from lerobot.scripts.eval import eval_policy
+from lerobot.scripts.run_mikasa_eval import eval_mikasa, GenerateConfig
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
 from lerobot.utils.random_utils import set_seed
 from lerobot.utils.train_utils import (
@@ -58,6 +59,8 @@ from lerobot.utils.utils import (
 from lerobot.utils.wandb_utils import WandBLogger
 from tqdm import trange
 import os
+import threading
+from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 
 
 def ddp_setup(rank: int, world_size: int):
@@ -84,7 +87,7 @@ def update_policy(
     use_amp: bool = False,
     lock=None,
     device_type: str = "cuda",
-    num_accumulation_steps: int = 1
+    num_accumulation_steps: int = 1,
 ) -> tuple[MetricsTracker, dict]:
     start_time = time.perf_counter()
     # device = get_device_from_parameters(policy)
@@ -102,7 +105,9 @@ def update_policy(
 
             for key in batch:
                 if isinstance(batch[key], torch.Tensor):
-                    batch[key] = batch[key].to(device, non_blocking=device_type == "cuda")
+                    batch[key] = batch[key].to(
+                        device, non_blocking=device_type == "cuda"
+                    )
 
             # assert batch["frame_index"].shape[0] == 1, "Batch size must be 1"
 
@@ -173,7 +178,14 @@ def train(rank: int, cfg: TrainPipelineConfig):
     torch.backends.cuda.matmul.allow_tf32 = True
 
     logging.info("Creating dataset")
-    dataset = make_dataset(cfg)
+
+    dataset_result = {}
+
+    def load_dataset():
+        dataset_result["dataset"] = make_dataset(cfg)
+
+    dataset_thread = threading.Thread(target=load_dataset)
+    dataset_thread.start()
 
     # Create environment used for evaluating checkpoints during training on simulation data.
     # On real-world data, no need to create an environment as evaluations are done outside train.py,
@@ -186,9 +198,11 @@ def train(rank: int, cfg: TrainPipelineConfig):
         )
 
     logging.info(f"Creating policy: {cfg.policy}")
+
+    ds_meta = LeRobotDatasetMetadata(cfg.dataset.repo_id, root=cfg.dataset.root)
     policy = make_policy(
         cfg=cfg.policy,
-        ds_meta=dataset.meta,
+        ds_meta=ds_meta,
     )
 
     logging.info("Creating optimizer and scheduler")
@@ -207,6 +221,8 @@ def train(rank: int, cfg: TrainPipelineConfig):
     )
     num_total_params = sum(p.numel() for p in policy.parameters())
 
+    dataset_thread.join()
+    dataset = dataset_result["dataset"]
     logging.info(
         colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}"
     )
@@ -296,6 +312,7 @@ def train(rank: int, cfg: TrainPipelineConfig):
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
         step += 1
+        os.environ["CURRENT_TRAINING_STEP"] = str(step)
         train_tracker.step()
         is_log_step = cfg.log_freq > 0 and step % cfg.log_freq == 0
         is_saving_step = step % cfg.save_freq == 0 or step == cfg.steps
@@ -307,7 +324,9 @@ def train(rank: int, cfg: TrainPipelineConfig):
                 wandb_log_dict = train_tracker.to_dict()
                 if output_dict:
                     wandb_log_dict.update(output_dict)
-                wandb_logger.log_dict(wandb_log_dict, step)
+
+                wandb_log_dict.update({"train_steps": step})
+                wandb_logger.log_dict(wandb_log_dict, custom_step_key="train_steps")
             train_tracker.reset_averages()
 
         if rank == 0 and cfg.save_checkpoint and is_saving_step:
@@ -320,46 +339,16 @@ def train(rank: int, cfg: TrainPipelineConfig):
             if wandb_logger:
                 wandb_logger.log_policy(checkpoint_dir)
 
-        if rank == 0 and cfg.env and is_eval_step:
-            step_id = get_step_identifier(step, cfg.steps)
+        if rank == 0 and is_eval_step:
             logging.info(f"Eval policy at step {step}")
-            with (
-                torch.no_grad(),
-                (
-                    torch.autocast(device_type=device_type)
-                    if cfg.policy.use_amp
-                    else nullcontext()
-                ),
-            ):
-                eval_info = eval_policy(
-                    eval_env,
-                    policy,
-                    cfg.eval.n_episodes,
-                    videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",
-                    max_episodes_rendered=4,
-                    start_seed=cfg.seed,
-                )
-
-            eval_metrics = {
-                "avg_sum_reward": AverageMeter("∑rwrd", ":.3f"),
-                "pc_success": AverageMeter("success", ":.1f"),
-                "eval_s": AverageMeter("eval_s", ":.3f"),
-            }
-            eval_tracker = MetricsTracker(
-                cfg.batch_size,
-                dataset.num_frames,
-                dataset.num_episodes,
-                eval_metrics,
-                initial_step=step,
+            eval_cfg = GenerateConfig(
+                task_suite_name="mikasa_remember_color",
+                num_envs=10,
+                num_trials_per_task=100,
+                use_wandb=True,
+                repo_path=cfg.dataset.root,
             )
-            eval_tracker.eval_s = eval_info["aggregated"].pop("eval_s")
-            eval_tracker.avg_sum_reward = eval_info["aggregated"].pop("avg_sum_reward")
-            eval_tracker.pc_success = eval_info["aggregated"].pop("pc_success")
-            logging.info(eval_tracker)
-            if wandb_logger:
-                wandb_log_dict = {**eval_tracker.to_dict(), **eval_info}
-                wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
-                wandb_logger.log_video(eval_info["video_paths"][0], step, mode="eval")
+            eval_mikasa(cfg=eval_cfg, model=policy.module, skip_wandb_init=True)
 
     if eval_env:
         eval_env.close()
@@ -378,6 +367,7 @@ def launch_train_ddp(rank, world_size, cfg):
         train(rank, cfg)
     except Exception as e:
         logging.error(f"Error occurred in DDP process {rank}: {e}")
+        raise e
     finally:
         destroy_process_group()
 

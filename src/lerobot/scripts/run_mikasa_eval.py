@@ -54,6 +54,7 @@ DATE_TIME = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 from torchvision.io import write_video
 
+
 def save_rollout_video(rollout_images, idx, success, task_description, log_file=None):
     """Saves an MP4 replay of an episode."""
     rollout_dir = f"./rollouts/{DATE}"
@@ -243,18 +244,13 @@ def center_crop(image, batch_size=1, crop_scale=0.9, return_pil_image=False):
     return image
 
 
-
-
-
 def infer_batch(images, prompts, model, processor, unnorm_key, crop_scale=0.9):
     """Infer a batch of samples."""
     batch_size = len(images)
     assert len(prompts) == batch_size, "Number of prompts must match number of images!"
 
     device = torch.cuda.current_device()
-    inputs = {
-        "task": prompts
-    }
+    inputs = {"task": prompts}
     images = (images / 255.0).clip(0, 1)  # Ensure image is in [0, 1] range
     images = einops.rearrange(images, "b h w c -> b c h w")
     inputs["observation.images.image"] = images
@@ -279,9 +275,18 @@ def get_model(cfg):
 
 
 @draccus.wrap()
-def eval_mikasa(cfg: GenerateConfig) -> None:
+def entry_point(cfg: GenerateConfig) -> None:
+    eval_mikasa(cfg)
+
+
+def eval_mikasa(
+    cfg: GenerateConfig,
+    model: SmolVLAPolicy | None = None,
+    skip_wandb_init: bool = False,
+    training_step: int = 0,
+) -> None:
     assert (
-        cfg.pretrained_checkpoint is not None
+        model is not None or cfg.pretrained_checkpoint is not None
     ), "cfg.pretrained_checkpoint must not be None!"
     if "image_aug" in cfg.pretrained_checkpoint:
         assert (
@@ -295,7 +300,8 @@ def eval_mikasa(cfg: GenerateConfig) -> None:
     # set_seed_everywhere(cfg.seed)
 
     # Load model
-    model = get_model(cfg)
+    if model is None:
+        model = get_model(cfg)
     processor = None
 
     # Initialize local logging
@@ -308,7 +314,7 @@ def eval_mikasa(cfg: GenerateConfig) -> None:
     print(f"Logging to local log file: {local_log_filepath}")
 
     # Initialize Weights & Biases logging as well
-    if cfg.use_wandb:
+    if cfg.use_wandb and not skip_wandb_init:
         wandb.init(
             entity=cfg.wandb_entity,
             project=cfg.wandb_project,
@@ -397,6 +403,9 @@ def eval_mikasa(cfg: GenerateConfig) -> None:
             success_flags = np.array([False] * num_envs)
             final_rewards = np.zeros(num_envs)
             final_distances = np.zeros(num_envs)
+
+            # reset memory at the begining of the episode
+            model.model.vlm_with_expert.reset_memory()
 
             while t < max_steps + cfg.num_steps_wait:
                 # try:
@@ -543,71 +552,76 @@ def eval_mikasa(cfg: GenerateConfig) -> None:
         log_file.write(f"Average Distance to target: {avg_dist_to_target}\n")
         log_file.write(f"Average Reward: {average_reward}\n")
         log_file.flush()
-        if cfg.use_wandb:
 
-            def create_boxplot(metric_name: str, plot_data_key: str):
-                """Return a Plotly Figure with grouped box-and-whisker plots."""
-                labels = list(plot_data.keys())
+    if cfg.use_wandb:
 
-                fig = go.Figure()
+        def create_boxplot(metric_name: str, plot_data_key: str):
+            """Return a Plotly Figure with grouped box-and-whisker plots."""
+            labels = list(plot_data.keys())
 
-                # one trace per label keeps colours & hover labels tidy
-                for lbl in labels:
-                    fig.add_trace(
-                        go.Box(
-                            y=plot_data[lbl][plot_data_key],
-                            name=lbl,
-                            boxpoints="outliers",  # show outliers, mimic Matplotlib default
-                        )
+            fig = go.Figure()
+
+            # one trace per label keeps colours & hover labels tidy
+            for lbl in labels:
+                fig.add_trace(
+                    go.Box(
+                        y=plot_data[lbl][plot_data_key],
+                        name=lbl,
+                        boxpoints="outliers",  # show outliers, mimic Matplotlib default
                     )
-
-                fig.update_layout(
-                    xaxis_title=metric_name,
-                    boxmode="group",  # group traces side-by-side
-                    height=300,
-                    width=400,
-                    margin=dict(l=40, r=20, t=20, b=60),
-                    template="simple_white",  # clean background like most Matplotlib styles
                 )
-                return fig
 
-            def create_bar_plot(
-                metric_name: str, plot_data_key: str, agg_fn=np.mean
-            ):  # same default as before
-                """Return a Plotly Figure with a bar chart of aggregated values."""
-                labels = list(plot_data.keys())
-                values = [agg_fn(plot_data[lbl][plot_data_key]) for lbl in labels]
-
-                fig = go.Figure(data=[go.Bar(x=labels, y=values)])
-
-                fig.update_layout(
-                    xaxis_title=metric_name,
-                    yaxis_title=agg_fn.__name__.capitalize(),
-                    height=300,
-                    width=400,
-                    margin=dict(l=40, r=20, t=20, b=60),
-                    template="simple_white",
-                )
-                fig.update_xaxes(tickangle=45)
-
-                return fig
-
-            wandb.log(
-                {
-                    "task_summary/reward_plot": create_boxplot(
-                        "Reward", plot_data_key="reward"
-                    ),
-                    "task_summary/success_rate_plot": create_bar_plot(
-                        "Success Rate", plot_data_key="success"
-                    ),
-                    "task_summary/distance_to_target_plot": create_boxplot(
-                        "Distance to Target", plot_data_key="distance_to_target"
-                    ),
-                    "task_summary/task_episodes": create_bar_plot(
-                        "Task Episodes", plot_data_key="reward", agg_fn=lambda x: len(x)
-                    ),
-                }
+            fig.update_layout(
+                xaxis_title=metric_name,
+                boxmode="group",  # group traces side-by-side
+                height=300,
+                width=400,
+                margin=dict(l=40, r=20, t=20, b=60),
+                template="simple_white",  # clean background like most Matplotlib styles
             )
+
+            if training_step != 0:
+                fig.update_layout(title_text=f"Training Step: {training_step}")
+
+            return fig
+
+        def create_bar_plot(
+            metric_name: str, plot_data_key: str, agg_fn=np.mean
+        ):  # same default as before
+            """Return a Plotly Figure with a bar chart of aggregated values."""
+            labels = list(plot_data.keys())
+            values = [agg_fn(plot_data[lbl][plot_data_key]) for lbl in labels]
+
+            fig = go.Figure(data=[go.Bar(x=labels, y=values)])
+
+            fig.update_layout(
+                xaxis_title=metric_name,
+                yaxis_title=agg_fn.__name__.capitalize(),
+                height=300,
+                width=400,
+                margin=dict(l=40, r=20, t=20, b=60),
+                template="simple_white",
+            )
+            fig.update_xaxes(tickangle=45)
+
+            if training_step != 0:
+                fig.update_layout(title_text=f"Training Step: {training_step}")
+
+            return fig
+
+        wandb.log(
+            {
+                "task_summary/reward_plot": create_boxplot(
+                    "Reward", plot_data_key="reward"
+                ),
+                "task_summary/success_rate_plot": create_bar_plot(
+                    "Success Rate", plot_data_key="success"
+                ),
+                "task_summary/distance_to_target_plot": create_boxplot(
+                    "Distance to Target", plot_data_key="distance_to_target"
+                ),
+            }
+        )
 
     # Save local log file
     log_file.close()
@@ -622,6 +636,9 @@ def eval_mikasa(cfg: GenerateConfig) -> None:
         )
         wandb.save(local_log_filepath)
 
+    # reset memory at the end of the run
+    model.model.vlm_with_expert.reset_memory()
+
 
 if __name__ == "__main__":
-    eval_mikasa()
+    entry_point()
