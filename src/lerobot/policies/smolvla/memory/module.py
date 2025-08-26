@@ -25,7 +25,7 @@ class MemoryModule(nn.Module):
         self.local_update_lr = nn.Parameter(
             torch.tensor(local_update_lr)
         )  # wrap in nn.Parameter to make it trainable
-        self.memory_gate = nn.Parameter(torch.zeros(hidden_size))
+        self.memory_gate = nn.Parameter(torch.ones(hidden_size) / 2)
 
         self.initialised = False
         self.current_M = None  # Track current memory state
