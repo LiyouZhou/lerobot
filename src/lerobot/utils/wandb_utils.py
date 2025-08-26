@@ -112,7 +112,8 @@ class WandBLogger:
         artifact_name = f"{self._group}-{step_id}"
         artifact_name = get_safe_wandb_artifact_name(artifact_name)
         artifact = self._wandb.Artifact(artifact_name, type="model")
-        artifact.add_file(checkpoint_dir / PRETRAINED_MODEL_DIR / SAFETENSORS_SINGLE_FILE)
+        for file in glob((str(checkpoint_dir / PRETRAINED_MODEL_DIR)) + "/*"):
+            artifact.add_file(file)
         self._wandb.log_artifact(artifact)
 
     def log_dict(
