@@ -262,6 +262,7 @@ def train(rank: int, cfg: TrainPipelineConfig):
         )
     else:
         sampler = DistributedSampler(dataset)
+        shuffle = False
         dataloader = torch.utils.data.DataLoader(
             dataset,
             num_workers=cfg.num_workers,
