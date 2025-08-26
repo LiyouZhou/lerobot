@@ -38,43 +38,44 @@ class MemoryModule(nn.Module):
     def reset_memory(self):
         self.current_M = None
 
-    def forward(self, x: torch.Tensor, reset_memory: bool = False) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         B, L, _ = x.shape  # step: [batch_size, embed_length, hidden_size]
 
         # 1) run all inner‐loop math in half precision
         with torch.amp.autocast(device_type="cuda", enabled=True, dtype=torch.float16):
-            x_flat = rearrange(x, "b l d -> (b l) d")  # [B * L, D]
+            with torch.enable_grad():
+                x_flat = rearrange(x, "b l d -> (b l) d")  # [B * L, D]
 
-            K = x_flat @ self.w_k.t()  # [B * L, D]
-            V = x_flat @ self.w_v.t()  # [B * L, D]
+                K = x_flat @ self.w_k.t()  # [B * L, D]
+                V = x_flat @ self.w_v.t()  # [B * L, D]
 
-            # Initialize or use current memory state
-            if self.current_M is None:
-                # Don't detach here - we want gradients to flow back to self.M
-                # for each sample in the batch, create a [D, D] memory matrix initialised by self.M
-                self.current_M = repeat(self.M, "d1 d2 -> b d1 d2", b=B).requires_grad_(
-                    True
-                )  # [B, D, D]
-            else:
-                self.current_M = (
-                    self.current_M.detach().clone().requires_grad_(True)
-                )  # [B, D, D]
+                # Initialize or use current memory state
+                if self.current_M is None:
+                    # Don't detach here - we want gradients to flow back to self.M
+                    # for each sample in the batch, create a [D, D] memory matrix initialised by self.M
+                    self.current_M = repeat(self.M, "d1 d2 -> b d1 d2", b=B).requires_grad_(
+                        True
+                    )  # [B, D, D]
+                else:
+                    self.current_M = (
+                        self.current_M.detach().clone().requires_grad_(True)
+                    )  # [B, D, D]
 
-            # inner‐loop loss & gradient wrt current_M (first-order)
-            K = rearrange(K, "(b l) d -> b l d", l=L)  # [B, L, D]
-            pred = torch.bmm(K, self.current_M)  # [B, L, D]
-            pred = rearrange(pred, "b l d -> (b l) d")  # [B * L, D]
-            inner_l = F.mse_loss(pred, V)
-            (gM,) = torch.autograd.grad(inner_l, self.current_M, create_graph=False)
+                # inner‐loop loss & gradient wrt current_M (first-order)
+                K = rearrange(K, "(b l) d -> b l d", l=L)  # [B, L, D]
+                pred = torch.bmm(K, self.current_M)  # [B, L, D]
+                pred = rearrange(pred, "b l d -> (b l) d")  # [B * L, D]
+                inner_l = F.mse_loss(pred, V)
+                (gM,) = torch.autograd.grad(inner_l, self.current_M, create_graph=False)
 
-            # one gradient step on current_M (detach to prevent second-order gradients)
-            self.current_M = self.current_M - self.local_update_lr * gM.detach()
+                # one gradient step on current_M (detach to prevent second-order gradients)
+                self.current_M = self.current_M - self.local_update_lr * gM.detach()
 
-            # retrieval with the adapted memory
-            Q = x_flat @ self.w_q.t()  # [B * L, D]
-            Q = rearrange(Q, "(b l) d -> b l d", l=L)  # [B, L, D]
-            out_half = torch.bmm(Q, self.current_M)  # [B, L, D]
+                # retrieval with the adapted memory
+                Q = x_flat @ self.w_q.t()  # [B * L, D]
+                Q = rearrange(Q, "(b l) d -> b l d", l=L)  # [B, L, D]
+                out_half = torch.bmm(Q, self.current_M)  # [B, L, D]
 
         # 2) cast back to original input dtype
         return out_half.to(x.dtype)
