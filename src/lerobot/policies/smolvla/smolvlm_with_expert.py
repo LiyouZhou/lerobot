@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
+import copy, os
 
 import torch
 from torch import nn
@@ -508,17 +508,20 @@ class SmolVLMWithExpertModel(nn.Module):
                     else:
                         out_emb = mlp_emb
 
+                    mse = nn.functional.mse_loss(out_emb, mlp_emb).item()
+
+                    gate_mag = neural_memory.memory_gate.abs().mean().item() if neural_memory is not None else 0.0
+                    current_training_step = int(os.environ.get('CURRENT_TRAINING_STEP', 0))
+                    if wandb.run is not None:
+                        wandb.log({
+                            f"memory_gate_magnitude/layer_{i}_{layer_idx}": gate_mag,
+                            f"mse_out_emb_vs_mlp_emb/layer_{i}_{layer_idx}": mse,
+                            "inner_steps": self.step_counter
+                        })
+
                     out_emb += after_first_residual
 
                     outputs_embeds.append(out_emb)
-
-                    mse = nn.functional.mse_loss(out_emb, mlp_emb).item()
-                    gate_mag = neural_memory.memory_gate.abs().mean().item() if neural_memory is not None else 0.0
-                    wandb.log({
-                        f"memory_gate_magnitude/layer_{i}_{layer_idx}": gate_mag,
-                        f"mse_out_emb_vs_mlp_emb/layer_{i}_{layer_idx}": mse,
-                        "steps": self.step_counter
-                    })
 
                     start = end if len(att_outputs) == 1 else 0
                 else:
