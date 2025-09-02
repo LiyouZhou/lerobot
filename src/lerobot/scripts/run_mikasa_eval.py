@@ -256,6 +256,7 @@ def infer_batch(images, prompts, model, processor, unnorm_key, crop_scale=0.9):
     inputs["observation.images.image"] = images
     inputs["observation.state"] = torch.zeros((batch_size, 8), device=device)
     with torch.no_grad():
+        model.reset()
         actions = model.select_action(batch=inputs)
 
     actions = actions.cpu().numpy()
