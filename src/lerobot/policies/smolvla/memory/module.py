@@ -87,10 +87,13 @@ class MemoryModule(nn.Module):
         self.initialised = True
 
     def reset_memory(self):
-        if hasattr(self.current_M, "reset_memory") and callable(
-            getattr(self.current_M, "reset_memory")
+        if isinstance(self.current_M, list) and all(
+            hasattr(mem, "reset_memory") and callable(
+                getattr(mem, "reset_memory") 
+            ) for mem in self.current_M )
         ):
-            self.current_M.reset_memory()
+            for mem in self.current_M:
+                mem.reset_memory()
         elif self.current_M is None:
             pass
         else:
