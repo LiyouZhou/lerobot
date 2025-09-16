@@ -14,53 +14,93 @@ class Memory(LlamaMLP):
 
 
 class MLPMemory(nn.Module):
-    def __init__(self, hidden_size, n=2):
+    def __init__(self, n=2, device="cuda"):
         super().__init__()
-        self.mlp = nn.Sequential(
-            *[
-                nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.ReLU())
-                for _ in range(n)
-            ]
+
+        self.B = 0
+        self.L = 0
+        self.D = 0
+        self.n = n  # number of layers
+        self.device = device
+
+    def create_weights(self):
+        self.layer_0_weights = torch.empty(
+            self.B, self.D, self.D, requires_grad=True, device=self.device
         )
+        self.layer_0_bias = torch.empty(
+            self.B, self.L, self.D, requires_grad=True, device=self.device
+        )
+        self.layer_1_weights = torch.empty(
+            self.B, self.D, self.D, requires_grad=True, device=self.device
+        )
+        self.layer_1_bias = torch.empty(
+            self.B, self.L, self.D, requires_grad=True, device=self.device
+        )
+        self.layers = [
+            self.layer_0_weights,
+            self.layer_0_bias,
+            self.layer_1_weights,
+            self.layer_1_bias,
+        ]
 
     def forward(self, x):
-        return self.mlp(x)
+        # x is of the shape [B, L, D]
+        B, L, D = x.shape
+        if self.B != B:
+            self.B, self.L, self.D = B, L, D
+            self.create_weights()
+            if not hasattr(self, "_saved_weights"):
+                self.initialize_weights()
+            else:
+                self.reset_memory()
+
+        # (B x L x D bmm B X D X D) + B x L x D -> B x L x D
+        x = torch.bmm(x, self.layer_0_weights) + self.layer_0_bias
+        x = F.gelu(x)
+        x = torch.bmm(x, self.layer_1_weights) + self.layer_1_bias
+        x = F.gelu(x)
+
+        return x
 
     def initialize_weights(self, init_weights=None):
         if init_weights is not None:
             self._saved_weights = init_weights
             self.reset_memory()
         else:
-            for layer in self.mlp:
-                for p in layer.parameters():
-                    if p.dim() > 1:
-                        nn.init.xavier_uniform_(p)
-                    else:
-                        nn.init.normal_(p, mean=0.0, std=0.02)
-
-            self._saved_weights = [layer.state_dict() for layer in self.mlp]
+            self._saved_weights = []
+            for p in self.layers:
+                if p.dim() > 1:
+                    temp_state = torch.empty_like(p[0], device=self.device)
+                    nn.init.xavier_uniform_(temp_state)
+                    p.copy_(
+                        repeat(temp_state, "d1 d2 -> b d1 d2", b=p.shape[0])
+                        .clone()
+                        .detach()
+                    )
+                    self._saved_weights.append(temp_state.clone().detach())
+                else:
+                    nn.init.normal_(p, mean=0.0, std=0.02)
 
     def get_init_weights(self):
         return self._saved_weights
 
     def reset_memory(self):
-        for layer, state in zip(self.mlp, self._saved_weights):
-            layer.load_state_dict(state)
+        for p, state in zip(self.layers, self._saved_weights):
+            p.copy_(repeat(state, "d1 d2 -> b d1 d2", b=p.shape[0]).clone().detach())
 
     def update(self, loss, learning_rate=1e-4):
-        for i, layer in enumerate(self.mlp):
-            for name, param in layer.named_parameters():
-                assert param.requires_grad
-                grad = torch.autograd.grad(
-                    loss, param, retain_graph=True, allow_unused=True
-                )[0]
+        for i, layer in enumerate(self.layers):
+            assert layer.requires_grad
+            grad = torch.autograd.grad(
+                loss, layer, retain_graph=True, allow_unused=True
+            )[0]
 
-                if grad is not None:
-                    param.data = param.data - learning_rate * grad.detach()
+            if grad is not None:
+                layer.data = layer.data - learning_rate * grad.detach()
 
-                    # print(f"Layer {i} | Param {name} | ", end="")
-                    # print(grad.abs().mean().item(), end=" ")
-                    # print()
+                # print(f"Layer {i} | Param {name} | ", end="")
+                # print(grad.abs().mean().item(), end=" ")
+                # print()
 
 
 class MemoryModule(nn.Module):
@@ -87,12 +127,10 @@ class MemoryModule(nn.Module):
         self.initialised = True
 
     def reset_memory(self):
-        if isinstance(self.current_M, list) and all(
-            hasattr(mem, "reset_memory") and callable(getattr(mem, "reset_memory"))
-            for mem in self.current_M
+        if hasattr(self.current_M, "reset_memory") and callable(
+            getattr(self.current_M, "reset_memory")
         ):
-            for mem in self.current_M:
-                mem.reset_memory()
+            self.current_M.reset_memory()
         elif self.current_M is None:
             pass
         else:
@@ -114,27 +152,19 @@ class MemoryModule(nn.Module):
                 if self.current_M is None:
                     # Don't detach here - we want gradients to flow back to self.M
                     # for each sample in the batch, create a [D, D] memory matrix initialised by self.M
-                    self.current_M = [MLPMemory(D) for _ in range(B)]
-
-                    # initialize every memory module with the same weights
-                    self.current_M[0].initialize_weights(init_weights=None)
-                    init_weights = self.current_M[0].get_init_weights()
-                    for i in range(1, B):
-                        self.current_M[i].initialize_weights(init_weights=init_weights)
+                    self.current_M = MLPMemory()
 
                 # inner‐loop loss & gradient wrt current_M (first-order)
-                K = rearrange(K, "(b l) d -> b l d", l=L)  # [B, L, D]
-                pred = self.batch_forward_memory(K)  # [B, L, D]
+                K = rearrange(K, "(b l) d -> b l d", b=B, l=L)  # [B, L, D]
+                pred = self.current_M(K)  # [B, L, D]
                 pred = rearrange(pred, "b l d -> (b l) d")  # [B * L, D]
                 inner_l = F.mse_loss(pred, V)
-
-                for mem in self.current_M:
-                    mem.update(inner_l)
+                self.current_M.update(inner_l)
 
                 # retrieval with the adapted memory
                 Q = x_flat @ self.w_q.t()  # [B * L, D]
-                Q = rearrange(Q, "(b l) d -> b l d", l=L)  # [B, L, D]
-                out_half = self.batch_forward_memory(Q)  # [B, L, D]
+                Q = rearrange(Q, "(b l) d -> b l d", b=B, l=L)  # [B, L, D]
+                out_half = self.current_M(Q)  # [B, L, D]
 
         # 2) cast back to original input dtype
         return out_half.to(x.dtype)
