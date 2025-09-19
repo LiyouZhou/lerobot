@@ -17,7 +17,7 @@ class MemoryModule(nn.Module):
     def __init__(self, hidden_size, local_update_lr: float = 1e-4):
         super().__init__()
         D = hidden_size
-        self.M = nn.Parameter(torch.empty(D, D))
+        self.M = torch.empty(D, D).to("cuda")
         self.w_k = nn.Parameter(torch.empty(D, D))
         self.w_v = nn.Parameter(torch.empty(D, D))
         self.w_q = nn.Parameter(torch.empty(D, D))
@@ -67,10 +67,10 @@ class MemoryModule(nn.Module):
                 pred = torch.bmm(K, self.current_M)  # [B, L, D]
                 pred = rearrange(pred, "b l d -> (b l) d")  # [B * L, D]
                 inner_l = F.mse_loss(pred, V)
-                (gM,) = torch.autograd.grad(inner_l, self.current_M, create_graph=False)
+                (gM,) = torch.autograd.grad(inner_l, self.current_M, create_graph=True)
 
                 # one gradient step on current_M (detach to prevent second-order gradients)
-                self.current_M = self.current_M - self.local_update_lr * gM.detach()
+                self.current_M = self.current_M - self.local_update_lr * gM
 
                 # retrieval with the adapted memory
                 Q = x_flat @ self.w_q.t()  # [B * L, D]
