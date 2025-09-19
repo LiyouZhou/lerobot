@@ -14,97 +14,77 @@ class Memory(LlamaMLP):
 
 
 class MLPMemory(nn.Module):
-    def __init__(self, n=2, device="cuda"):
+    def __init__(self, batch_size, embed_len, hidden_size, n=2, device="cuda"):
         super().__init__()
 
-        self.B = 0
-        self.L = 0
-        self.D = 0
+        self.B = batch_size
+        self.L = embed_len
+        self.D = hidden_size
         self.n = n  # number of layers
         self.device = device
 
-    def create_weights(self):
-        self.layer_0_weights = torch.empty(
+        self._saved_weights = []
+        self.fc0 = torch.empty(
             self.B, self.D, self.D, requires_grad=True, device=self.device
         )
-        self.layer_0_bias = torch.empty(
-            self.B, self.L, self.D, requires_grad=True, device=self.device
+        temp_state = torch.empty_like(
+            self.fc0[0], device=self.device, requires_grad=True
         )
-        self.layer_1_weights = torch.empty(
+        nn.init.xavier_uniform_(temp_state)
+        self.fc0 = repeat(
+            temp_state.clone().detach(), "... -> b ...", b=self.fc0.shape[0]
+        )
+        self._saved_weights.append(temp_state.clone().detach())
+
+        self.fc1 = torch.empty(
             self.B, self.D, self.D, requires_grad=True, device=self.device
         )
-        self.layer_1_bias = torch.empty(
-            self.B, self.L, self.D, requires_grad=True, device=self.device
+        temp_state = torch.empty_like(
+            self.fc1[0], device=self.device, requires_grad=True
         )
-        self.layers = [
-            self.layer_0_weights,
-            self.layer_0_bias,
-            self.layer_1_weights,
-            self.layer_1_bias,
-        ]
+        nn.init.xavier_uniform_(temp_state)
+        self.fc1 = repeat(
+            temp_state.clone().detach(), "... -> b ...", b=self.fc1.shape[0]
+        )
+        self._saved_weights.append(temp_state.clone().detach())
+
+        self.fc0.requires_grad = True
+        self.fc1.requires_grad = True
 
     def forward(self, x):
-        # x is of the shape [B, L, D]
-        B, L, D = x.shape
-        if self.B != B:
-            self.B, self.L, self.D = B, L, D
-            self.create_weights()
-            if not hasattr(self, "_saved_weights"):
-                self.initialize_weights()
-            else:
-                self.reset_memory()
+        # B x L x D bmm B X D X D -> B x L x D
+        a0 = torch.bmm(x, self.fc0)
+        o0 = F.gelu(a0)
+        a1 = torch.bmm(o0, self.fc1)
 
-        # (B x L x D bmm B X D X D) + B x L x D -> B x L x D
-        x = torch.bmm(x, self.layer_0_weights) + self.layer_0_bias
-        x = F.gelu(x)
-        x = torch.bmm(x, self.layer_1_weights) + self.layer_1_bias
-        x = F.gelu(x)
-
-        return x
-
-    def initialize_weights(self, init_weights=None):
-        if init_weights is not None:
-            self._saved_weights = init_weights
-            self.reset_memory()
-        else:
-            self._saved_weights = []
-            for p in self.layers:
-                if p.dim() > 1:
-                    temp_state = torch.empty_like(p[0], device=self.device)
-                    nn.init.xavier_uniform_(temp_state)
-                    p.copy_(
-                        repeat(temp_state, "d1 d2 -> b d1 d2", b=p.shape[0])
-                        .clone()
-                        .detach()
-                    )
-                    self._saved_weights.append(temp_state.clone().detach())
-                else:
-                    nn.init.normal_(p, mean=0.0, std=0.02)
-
-    def get_init_weights(self):
-        return self._saved_weights
+        return a1
 
     def reset_memory(self):
-        for p, state in zip(self.layers, self._saved_weights):
-            p.copy_(repeat(state, "d1 d2 -> b d1 d2", b=p.shape[0]).clone().detach())
+        self.fc0 = repeat(
+            self._saved_weights[0].clone().detach(), "... -> b ...", b=self.B
+        )
+        self.fc1 = repeat(
+            self._saved_weights[1].clone().detach(), "... -> b ...", b=self.B
+        )
+        self.fc0.requires_grad = True
+        self.fc1.requires_grad = True
 
     def update(self, loss, learning_rate=1e-4):
-        for i, layer in enumerate(self.layers):
-            assert layer.requires_grad
-            grad = torch.autograd.grad(
-                loss, layer, retain_graph=True, allow_unused=True
-            )[0]
+        fc0_grad = torch.autograd.grad(
+            loss, self.fc0, retain_graph=True, create_graph=True
+        )[0]
+        fc1_grad = torch.autograd.grad(
+            loss, self.fc1, retain_graph=True, create_graph=True
+        )[0]
 
-            if grad is not None:
-                layer.data = layer.data - learning_rate * grad.detach()
-
-                # print(f"Layer {i} | Param {name} | ", end="")
-                # print(grad.abs().mean().item(), end=" ")
-                # print()
+        self.fc0 = self.fc0 - learning_rate * fc0_grad
+        self.fc1 = self.fc1 - learning_rate * fc1_grad
 
 
 class MemoryModule(nn.Module):
-    def __init__(self, hidden_size, local_update_lr: float = 1e-4):
+    def __init__(
+        self, batch_size, embed_len, hidden_size, local_update_lr: float = 1e-4
+    ):
         super().__init__()
         D = hidden_size
         self.M = None
@@ -112,13 +92,22 @@ class MemoryModule(nn.Module):
         self.w_v = nn.Parameter(torch.empty(D, D))
         self.w_q = nn.Parameter(torch.empty(D, D))
 
+        # Don't detach here - we want gradients to flow back to self.M
+        # for each sample in the batch, create a [D, D] memory matrix initialised by self.M
+        self.current_M = MLPMemory(
+            batch_size=batch_size, embed_len=embed_len, hidden_size=hidden_size
+        )
+
         self.local_update_lr = nn.Parameter(
             torch.tensor(local_update_lr)
         )  # wrap in nn.Parameter to make it trainable
         self.memory_gate = nn.Parameter(torch.ones(hidden_size) / 2)
 
         self.initialised = False
-        self.current_M = None  # Track current memory state
+
+        self.initialize_weights()
+
+        self.projection_layer = nn.Parameter(torch.randn(hidden_size, hidden_size))
 
     def initialize_weights(self):
         for p in (self.w_k, self.w_v, self.w_q):
@@ -148,12 +137,6 @@ class MemoryModule(nn.Module):
                 K = x_flat @ self.w_k.t()  # [B * L, D]
                 V = x_flat @ self.w_v.t()  # [B * L, D]
 
-                # Initialize or use current memory state
-                if self.current_M is None:
-                    # Don't detach here - we want gradients to flow back to self.M
-                    # for each sample in the batch, create a [D, D] memory matrix initialised by self.M
-                    self.current_M = MLPMemory()
-
                 # inner‐loop loss & gradient wrt current_M (first-order)
                 K = rearrange(K, "(b l) d -> b l d", b=B, l=L)  # [B, L, D]
                 pred = self.current_M(K)  # [B, L, D]
@@ -166,23 +149,12 @@ class MemoryModule(nn.Module):
                 Q = rearrange(Q, "(b l) d -> b l d", b=B, l=L)  # [B, L, D]
                 out_half = self.current_M(Q)  # [B, L, D]
 
+                out_half = rearrange(out_half, "b l d -> (b l) d")
+                out_half = out_half @ self.projection_layer
+                out_half = rearrange(out_half, "(b l) d -> b l d", b=B, l=L)
+
         # 2) cast back to original input dtype
         return out_half.to(x.dtype)
-
-    def batch_forward_memory(self, x):
-        B, L, D = x.shape
-
-        pred = []
-        for i in range(B):
-            self.current_M[i] = self.current_M[i].to(x.device)
-            pred.append(self.current_M[i](x[i]))
-            # print(f"x {i}: ", x[i])
-            # print(f"Memory {i} output mean: ", pred[-1].abs().mean().item())
-        # pred is a list of length B, each element is [L, D]
-
-        pred = torch.stack(pred, dim=0)  # [B, L, D]
-
-        return pred
 
 
 class MemoryLlamaDecoderLayer(LlamaDecoderLayer):
@@ -243,28 +215,83 @@ class MemoryLlamaDecoderLayer(LlamaDecoderLayer):
 if __name__ == "__main__":
     from tqdm import trange
 
-    memory = MemoryModule(hidden_size=1024)
-    memory.initialize_weights()
+    hidden_size = 100
+    batch_size = 16
+    embed_len = hidden_size
+    memory = MemoryModule(
+        hidden_size=hidden_size, batch_size=batch_size, embed_len=embed_len
+    )
     optimizer = torch.optim.Adam(memory.parameters(), lr=1e-4)
     memory.to(device="cuda")
 
-    for iteration in trange(1000):
+    for param in memory.parameters():
+        print(param.shape)
+
+    for name, param in memory.named_parameters():
+        print(name, param.requires_grad)
+
+    pbar = trange(10000)
+    for iteration in pbar:
         x = torch.randn(
-            16, 20, 300, 1024
+            16, 3, hidden_size, hidden_size
         )  # [episodes in batch, steps in episode, features]
         outputs = []
 
         # Reset memory at the start of each batch
-        memory.current_M = None
+        memory.reset_memory()
         x = x.to(device="cuda")
         for step in range(x.shape[1]):  # iterate through the steps in the episodes
             out = memory(x[:, step, :, :])
-            # print("x[:, step, :, :]", x[:, step, :, :])
             outputs.append(out)
 
-        # Stack outputs along the step dimension
-        outputs = torch.stack(outputs, dim=1)
-        loss = F.mse_loss(outputs, x)
+        output = outputs[-1]
+        # ones = torch.ones_like(output)
+        y_true = x[:, 1, :, :]
+        y_pred = x[:, 2, :, :]
+        y_pred = F.gelu(y_pred)
+        loss = 0.5 * ((y_pred - y_true) ** 2).mean()
+        # print(loss.item())
+
+        # print(torch.mean(output).item())
+
+        # print(torch.mean(memory.memory_gate).item())
+
+        # for v in [memory.w_k, memory.w_v, memory.w_q]:
+        #     print(torch.mean(v).item(), torch.std(v).item())
+        # los                                                                                                                                                                                                                            s = F.mse_loss(output, ones)
+
+        out_mean = torch.mean(output)
+        out_std = torch.std(output)
+
+        data_mean = torch.mean(x)
+        data_std = torch.std(x)
+
+        mse_loss = F.mse_loss(output, x[:, 1, :, :])
+
+
+        # Use KL divergence loss between output and x[:, 1, :, :]
+        # output_log_softmax = F.log_softmax(output, dim=-1)
+        # target_softmax = F.softmax(x[:, 1, :, :], dim=-1)
+        # loss = F.kl_div(output_log_softmax, target_softmax, reduction="batchmean")
+
+        std_loss = torch.abs(data_std - out_std)
+
+        loss = mse_loss + std_loss
+
+        pbar.set_postfix(
+            {
+                "Loss": f"{loss.item():.03f}",
+                "out": f"{out_mean.item():.03f}, {out_std.item():.03f}",
+                "mse_loss": f"{mse_loss.item():.03f}",
+                "std_loss": f"{std_loss.item():.03f}",
+            }
+        )
+    
         loss.backward()
+        # for name, param in memory.named_parameters():
+        #     print(name, param.grad)
         optimizer.step()
         optimizer.zero_grad()
+
+        # for name, param in memory.current_M.named_parameters():
+        #     print(name, param.requires_grad)
