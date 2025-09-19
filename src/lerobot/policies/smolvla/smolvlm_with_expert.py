@@ -95,10 +95,29 @@ class SmolVLMWithExpertModel(nn.Module):
 
         if memory:
             print(f"Creating {self.num_vlm_layers} neural memory modules of hidden_size {config.text_config.hidden_size}")
-        self.neural_memory_modules = [
-            [MemoryModule(config.text_config.hidden_size) if memory else None for _ in range(self.num_vlm_layers)],
-            [None for _ in range(self.num_vlm_layers)],
-        ]
+
+        class PlaceholderModule(nn.Module):
+            def forward(self, x):
+                return x  # does nothing
+
+        self.neural_memory_modules = nn.ModuleList(
+            [
+                nn.ModuleList(
+                    [
+                        (
+                            MemoryModule(config.text_config.hidden_size)
+                            if memory
+                            else PlaceholderModule()
+                        )
+                        for _ in range(self.num_vlm_layers)
+                    ]
+                ),
+                nn.ModuleList(
+                    [PlaceholderModule() for _ in range(self.num_vlm_layers)]
+                ),
+            ]
+        )
+        self.neural_memory_modules[0][-1] = PlaceholderModule()  # No memory in the last layer
     
         self.config = config
         # Smaller lm expert
@@ -148,7 +167,7 @@ class SmolVLMWithExpertModel(nn.Module):
     def reset_memory(self):
         for i in range(len(self.neural_memory_modules)):
             for layer in self.neural_memory_modules[i]:
-                if layer is not None:
+                if isinstance(layer, MemoryModule):
                     layer.reset_memory()
 
     def get_vlm_model(self):
@@ -498,7 +517,7 @@ class SmolVLMWithExpertModel(nn.Module):
                     mlp_emb = layer.mlp(out_emb)
 
                     neural_memory = self.neural_memory_modules[i][layer_idx]
-                    if neural_memory is not None:
+                    if isinstance(neural_memory, MemoryModule):
                         if not neural_memory.initialised:
                             neural_memory.initialize_weights()
                             neural_memory = neural_memory.to(out_emb.device)
@@ -510,7 +529,7 @@ class SmolVLMWithExpertModel(nn.Module):
 
                     mse = nn.functional.mse_loss(out_emb, mlp_emb).item()
 
-                    gate_mag = neural_memory.memory_gate.abs().mean().item() if neural_memory is not None else 0.0
+                    gate_mag = neural_memory.memory_gate.abs().mean().item() if isinstance(neural_memory, MemoryModule) else 0.0
                     current_training_step = int(os.environ.get('CURRENT_TRAINING_STEP', 0))
                     if wandb.run is not None:
                         wandb.log({
