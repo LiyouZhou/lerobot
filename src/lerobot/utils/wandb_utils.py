@@ -141,7 +141,10 @@ class WandBLogger:
         data = {}
         for k, v in d.items():
             if isinstance(v, torch.Tensor):
-                v = v.item()
+                try:
+                    v = v.item()
+                except Exception:
+                    continue
 
             if not isinstance(v, (int, float, str)):
                 logging.warning(
