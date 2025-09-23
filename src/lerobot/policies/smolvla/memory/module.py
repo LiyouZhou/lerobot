@@ -14,14 +14,16 @@ class Memory(LlamaMLP):
 
 
 class MLPMemory(nn.Module):
-    def __init__(self, batch_size, embed_len, hidden_size, n=2, device="cuda"):
+    def __init__(self, n=2, device="cuda"):
         super().__init__()
 
+        self.n = n  # number of layers
+        self.device = device
+
+    def create_weights(self, batch_size, embed_len, hidden_size):
         self.B = batch_size
         self.L = embed_len
         self.D = hidden_size
-        self.n = n  # number of layers
-        self.device = device
 
         self._saved_weights = []
         self.fc0 = torch.empty(
@@ -52,6 +54,10 @@ class MLPMemory(nn.Module):
         self.fc1.requires_grad = True
 
     def forward(self, x):
+        B, L, D = x.shape
+        if not hasattr(self, "fc0") or self.fc0.shape[0] != B:
+            self.create_weights(batch_size=B, embed_len=L, hidden_size=D)
+
         # B x L x D bmm B X D X D -> B x L x D
         a0 = torch.bmm(x, self.fc0)
         o0 = F.gelu(a0)
@@ -59,7 +65,19 @@ class MLPMemory(nn.Module):
 
         return a1
 
+    def detach(self):
+        if not hasattr(self, "fc0"):
+            return
+        self.fc0 = self.fc0.detach()
+        self.fc1 = self.fc1.detach()
+        self.fc0.requires_grad = True
+        self.fc1.requires_grad = True
+
     def reset_memory(self):
+        if not hasattr(self, "_saved_weights"):
+            # let the first inference call create the weights
+            return
+
         self.fc0 = repeat(
             self._saved_weights[0].clone().detach(), "... -> b ...", b=self.B
         )
@@ -70,11 +88,12 @@ class MLPMemory(nn.Module):
         self.fc1.requires_grad = True
 
     def update(self, loss, learning_rate=1e-4):
-        fc0_grad = torch.autograd.grad(
-            loss, self.fc0, retain_graph=True, create_graph=True
-        )[0]
         fc1_grad = torch.autograd.grad(
             loss, self.fc1, retain_graph=True, create_graph=True
+        )[0]
+
+        fc0_grad = torch.autograd.grad(
+            loss, self.fc0, retain_graph=True, create_graph=True
         )[0]
 
         self.fc0 = self.fc0 - learning_rate * fc0_grad
@@ -82,9 +101,7 @@ class MLPMemory(nn.Module):
 
 
 class MemoryModule(nn.Module):
-    def __init__(
-        self, batch_size, embed_len, hidden_size, local_update_lr: float = 1e-4
-    ):
+    def __init__(self, hidden_size, local_update_lr: float = 1e-4):
         super().__init__()
         D = hidden_size
         self.M = None
@@ -94,13 +111,11 @@ class MemoryModule(nn.Module):
 
         # Don't detach here - we want gradients to flow back to self.M
         # for each sample in the batch, create a [D, D] memory matrix initialised by self.M
-        self.current_M = MLPMemory(
-            batch_size=batch_size, embed_len=embed_len, hidden_size=hidden_size
-        )
+        self.current_M = MLPMemory()
 
-        self.local_update_lr = nn.Parameter(
-            torch.tensor(local_update_lr)
-        )  # wrap in nn.Parameter to make it trainable
+        # self.local_update_lr = nn.Parameter(
+        #     torch.tensor(local_update_lr)
+        # )  # wrap in nn.Parameter to make it trainable
         self.memory_gate = nn.Parameter(torch.ones(hidden_size) / 2)
 
         self.initialised = False
@@ -136,6 +151,10 @@ class MemoryModule(nn.Module):
 
                 K = x_flat @ self.w_k.t()  # [B * L, D]
                 V = x_flat @ self.w_v.t()  # [B * L, D]
+
+                # Detach adapted memory from previous step
+                # For the purpose of outter loop, the memory is a constant
+                self.current_M.detach()
 
                 # inner‐loop loss & gradient wrt current_M (first-order)
                 K = rearrange(K, "(b l) d -> b l d", b=B, l=L)  # [B, L, D]
@@ -258,7 +277,7 @@ if __name__ == "__main__":
 
         # for v in [memory.w_k, memory.w_v, memory.w_q]:
         #     print(torch.mean(v).item(), torch.std(v).item())
-        # los                                                                                                                                                                                                                            s = F.mse_loss(output, ones)
+        # loss = F.mse_loss(output, ones)
 
         out_mean = torch.mean(output)
         out_std = torch.std(output)
@@ -267,7 +286,6 @@ if __name__ == "__main__":
         data_std = torch.std(x)
 
         mse_loss = F.mse_loss(output, x[:, 1, :, :])
-
 
         # Use KL divergence loss between output and x[:, 1, :, :]
         # output_log_softmax = F.log_softmax(output, dim=-1)
@@ -286,7 +304,7 @@ if __name__ == "__main__":
                 "std_loss": f"{std_loss.item():.03f}",
             }
         )
-    
+
         loss.backward()
         # for name, param in memory.named_parameters():
         #     print(name, param.grad)
