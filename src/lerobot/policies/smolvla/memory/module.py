@@ -53,6 +53,9 @@ class MLPMemory(nn.Module):
         self.fc0.requires_grad = True
         self.fc1.requires_grad = True
 
+        for i, t in enumerate(self._saved_weights):
+            self.register_buffer(f"_saved_weights_{i}", t)
+
     def forward(self, x):
         B, L, D = x.shape
         if not hasattr(self, "fc0") or self.fc0.shape[0] != B:
