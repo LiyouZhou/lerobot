@@ -167,6 +167,13 @@ def load_smolvla(
         print(
             f"SmolVLA {len(missing)} missing / {len(unexpected)} unexpected keys",
         )
+        print("missing:")
+        for k in missing:
+            print("  ", k)
+
+        print("unexpected:")
+        for k in unexpected:
+            print("  ", k)
 
     return model
 
