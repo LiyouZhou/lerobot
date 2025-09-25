@@ -18,6 +18,7 @@ import time
 from contextlib import nullcontext
 from pprint import pformat
 from typing import Any
+from pathlib import Path
 
 import torch
 from termcolor import colored
@@ -61,6 +62,7 @@ from tqdm import trange
 import os
 import threading
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
+from lerobot.policies.smolvla.modeling_smolvla import load_smolvla
 
 
 def ddp_setup(rank: int, world_size: int):
@@ -295,6 +297,7 @@ def train(rank: int, cfg: TrainPipelineConfig):
     )
 
     logging.info("Start offline training on a fixed dataset")
+    is_first_step = True
     for _ in trange(step, cfg.steps, position=rank, desc=f"Rank {rank}"):
 
         train_tracker, output_dict = update_policy(
@@ -309,6 +312,19 @@ def train(rank: int, cfg: TrainPipelineConfig):
             use_amp=cfg.policy.use_amp,
             device_type=device_type,
         )
+
+        if is_first_step:
+            is_first_step = False
+            logging.info(
+                "First step completed which means memory has finished initialization. Now load mem initialisation weights."
+            )
+            if cfg.policy.pretrained_path is not None:
+                fn = list(Path(cfg.policy.pretrained_path).glob("*.safetensors"))[
+                    0
+                ].as_posix()
+                load_smolvla(policy.module, fn, device=device)
+
+                policy.module.model.vlm_with_expert.reset_memory()
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.

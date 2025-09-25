@@ -37,8 +37,8 @@ import gymnasium as gym
 from mikasa_robo_suite.dataset_collectors.get_mikasa_robo_datasets import env_info
 
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
-from lerobot.policies.factory import make_policy
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+from lerobot.policies.smolvla.modeling_smolvla import load_smolvla
 
 # Append current directory so that interpreter can find experiments.robot
 sys.path.append("../..")
@@ -301,8 +301,10 @@ def eval_mikasa(
     # set_seed_everywhere(cfg.seed)
 
     # Load model
+    model_is_newly_loaded = False
     if model is None:
         model = get_model(cfg)
+        model_is_newly_loaded = True
     processor = None
 
     # Initialize local logging
@@ -425,6 +427,25 @@ def eval_mikasa(
                 # Save preprocessed image for replay video
                 for i in range(num_envs):
                     replay_images[i].append(images[i].detach().clone())
+
+                if model_is_newly_loaded:
+                    # run a inference to force initialisation of the memories
+                    actions = infer_batch(
+                        images=images,
+                        prompts=prompts,
+                        model=model,
+                        processor=processor,
+                        unnorm_key=unnorm_key,
+                        crop_scale=0.9 if cfg.center_crop else 1.0,
+                    )
+
+                    # reload the safetensors weights to fill the memory initialisation values
+                    fn = list(Path(cfg.pretrained_checkpoint).glob("*.safetensors"))[0].as_posix()
+                    load_smolvla(model, fn, device=torch.cuda.current_device())
+
+                    # reset the memory again
+                    model.model.vlm_with_expert.reset_memory()
+                    model_is_newly_loaded = False
 
                 # query VLA model for action
                 actions = infer_batch(
