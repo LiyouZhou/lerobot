@@ -360,8 +360,8 @@ def train(rank: int, cfg: TrainPipelineConfig):
             logging.info(f"Eval policy at step {step}")
             eval_cfg = GenerateConfig(
                 task_suite_name="mikasa_remember_color",
-                num_envs=10,
-                num_trials_per_task=100,
+                num_envs=cfg.num_envs,
+                num_trials_per_task=cfg.num_trials_per_task,
                 use_wandb=True,
                 repo_path=cfg.dataset.root,
             )

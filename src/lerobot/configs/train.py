@@ -66,6 +66,10 @@ class TrainPipelineConfig(HubMixin):
 
     episodic: bool = False # present data in episodic manner
 
+    # evaluation settings
+    num_envs: int = 10
+    num_trials_per_task: int = 100
+
     def __post_init__(self):
         self.checkpoint_path = None
 
