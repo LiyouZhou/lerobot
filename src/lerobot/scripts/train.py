@@ -364,6 +364,8 @@ def train(rank: int, cfg: TrainPipelineConfig):
                 num_trials_per_task=cfg.num_trials_per_task,
                 use_wandb=True,
                 repo_path=cfg.dataset.root,
+                log_performance_graphs=False,
+                log_rollout_videos=False,
             )
             eval_mikasa(cfg=eval_cfg, model=policy.module, skip_wandb_init=True)
 

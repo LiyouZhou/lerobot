@@ -67,9 +67,9 @@ def save_rollout_video(rollout_images, idx, success, task_description, log_file=
     )
     mp4_path = f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
     rollout_images = torch.stack(rollout_images)
-    print("rollout_images", rollout_images.shape)
+    # print("rollout_images", rollout_images.shape)
     write_video(mp4_path, rollout_images, fps=30)
-    print(f"Saved rollout MP4 at path {mp4_path}")
+    # print(f"Saved rollout MP4 at path {mp4_path}")
     if log_file is not None:
         log_file.write(f"Saved rollout MP4 at path {mp4_path}\n")
 
@@ -112,6 +112,9 @@ class GenerateConfig:
     num_envs: int = 4                                # Number of environments to run in parallel (for multi-agent tasks)
 
     repo_path: str = "your_dataset"                  # for stats of the dataset
+
+    log_rollout_videos: bool = True                 # Whether to save rollout videos
+    log_performance_graphs: bool = True              # Whether to log model graphs to W&B
     #################################################################################################################
     # fmt: on
 
@@ -440,7 +443,9 @@ def eval_mikasa(
                     )
 
                     # reload the safetensors weights to fill the memory initialisation values
-                    fn = list(Path(cfg.pretrained_checkpoint).glob("*.safetensors"))[0].as_posix()
+                    fn = list(Path(cfg.pretrained_checkpoint).glob("*.safetensors"))[
+                        0
+                    ].as_posix()
                     load_smolvla(model, fn, device=torch.cuda.current_device())
 
                     # reset the memory again
@@ -506,13 +511,15 @@ def eval_mikasa(
                 task_episodes += 1
                 total_episodes += 1
 
-                mp4_path = save_rollout_video(
-                    replay_images[i],
-                    total_episodes,
-                    success=terminated_flags[i],
-                    task_description=task_name,
-                    log_file=log_file,
-                )
+                mp4_path = None
+                if cfg.log_rollout_videos:
+                    mp4_path = save_rollout_video(
+                        replay_images[i],
+                        total_episodes,
+                        success=terminated_flags[i],
+                        task_description=task_name,
+                        log_file=log_file,
+                    )
 
                 if cfg.use_wandb:
                     rollout_video_topic = (
@@ -528,20 +535,22 @@ def eval_mikasa(
                     )
                     plot_data[task_name]["reward"].append(final_rewards[i])
 
-                    wandb.log(
-                        {
-                            rollout_video_topic: wandb.Video(mp4_path, format="mp4"),
-                            f"task/{task_name}/distance_to_target": final_distances[i],
-                            f"task/{task_name}/reward": final_rewards[i],
-                            f"task/{task_name}/episode_idx": task_episodes - 1,
-                        },
-                    )
+                    wandb_data = {
+                        f"task/{task_name}/distance_to_target": final_distances[i],
+                        f"task/{task_name}/reward": final_rewards[i],
+                        f"task/{task_name}/episode_idx": task_episodes - 1,
+                    }
+                    if mp4_path is not None:
+                        wandb_data[rollout_video_topic] = wandb.Video(
+                            mp4_path, format="mp4"
+                        )
+                    wandb.log(wandb_data)
 
                 dist_to_target.append(final_distances[i])
                 all_rewards.append(final_rewards[i])
 
             # Log current results
-            print(f"Success: {terminated}")
+            # print(f"Success: {terminated}")
             print(f"# episodes completed so far: {total_episodes}")
             print(
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)"
@@ -556,26 +565,29 @@ def eval_mikasa(
         # Log final results
         avg_dist_to_target = np.mean(dist_to_target)
         average_reward = np.mean(all_rewards)
+        task_success_rate = float(task_successes) / float(task_episodes)
+        total_success_rate = float(total_successes) / float(total_episodes)
 
-        print(
-            f"Current task success rate: {float(task_successes) / float(task_episodes)}"
-        )
-        print(
-            f"Current total success rate: {float(total_successes) / float(total_episodes)}"
-        )
+        print(f"Current task success rate: {task_success_rate}")
+        print(f"Current total success rate: {total_success_rate}")
         print(f"Average Distance to target: {avg_dist_to_target}")
         print(f"Average Reward: {average_reward}")
-        log_file.write(
-            f"Current task success rate: {float(task_successes) / float(task_episodes)}\n"
-        )
-        log_file.write(
-            f"Current total success rate: {float(total_successes) / float(total_episodes)}\n"
-        )
+        log_file.write(f"Current task success rate: {task_success_rate}\n")
+        log_file.write(f"Current total success rate: {total_success_rate}\n")
         log_file.write(f"Average Distance to target: {avg_dist_to_target}\n")
         log_file.write(f"Average Reward: {average_reward}\n")
         log_file.flush()
 
-    if cfg.use_wandb:
+        if cfg.use_wandb:
+            wandb.log(
+                {
+                    f"task/{task_name}/success_rate": task_success_rate,
+                    f"task/{task_name}/avg_distance_to_target": avg_dist_to_target,
+                    f"task/{task_name}/avg_reward": average_reward,
+                }
+            )
+
+    if cfg.use_wandb and cfg.log_performance_graphs:
 
         def create_boxplot(metric_name: str, plot_data_key: str):
             """Return a Plotly Figure with grouped box-and-whisker plots."""
@@ -654,6 +666,9 @@ def eval_mikasa(
             {
                 "total/success_rate": float(total_successes) / float(total_episodes),
                 "total/num_episodes": total_episodes,
+                "total/current_model_step": int(
+                    os.environ.get("CURRENT_TRAINING_STEP", 0)
+                ),
             }
         )
         wandb.save(local_log_filepath)
