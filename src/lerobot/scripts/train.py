@@ -29,6 +29,7 @@ import torch.multiprocessing as mp
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
+import wandb
 
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
@@ -114,6 +115,7 @@ def update_policy(
             # assert batch["frame_index"].shape[0] == 1, "Batch size must be 1"
 
             if batch["frame_index"][0].cpu().tolist() == 0:
+                print("Frame 0, Resetting memory")
                 policy.module.model.vlm_with_expert.reset_memory()
             loss, output_dict = policy(batch)
             loss_accumulated += loss
@@ -151,6 +153,36 @@ def update_policy(
     train_metrics.grad_norm = grad_norm.item()
     train_metrics.lr = optimizer.param_groups[0]["lr"]
     train_metrics.update_s = time.perf_counter() - start_time
+
+    ground_truth_actions = output_dict["ground_truth_actions"]
+    predicted_actions = output_dict["predicted_actions"]
+    frame_indices = batch["frame_index"]
+    task_indices = batch["task_index"]
+
+    # Calculate and log per-frame and per-task MSE
+    mse = F.mse_loss(predicted_actions, ground_truth_actions, reduction="none")
+    mse_per_sample = mse.mean(dim=1)  # Mean over action dimensions
+    mse_per_sample = mse_per_sample.mean(dim=1)  # Mean over action dimensions
+
+    current_training_step = int(os.environ.get("CURRENT_TRAINING_STEP", 0))
+    for idx, task_idx in enumerate(task_indices.tolist()):
+        task_loss = mse_per_sample[idx].item()
+
+        wandb.log(
+            {
+                f"task_mse/task_{task_idx}": task_loss,
+                f"task_mse/training_step": current_training_step,
+
+            }
+        )
+
+    wandb.log(
+        {
+            f"frame_mse/frame_{frame_indices[0].cpu().tolist()}": loss_accumulated.item(),
+            f"frame_mse/training_step": current_training_step,
+        }
+    )
+
     return train_metrics, output_dict
 
 
@@ -318,7 +350,11 @@ def train(rank: int, cfg: TrainPipelineConfig):
             logging.info(
                 "First step completed which means memory has finished initialization. Now load mem initialisation weights."
             )
-            if cfg.policy.pretrained_path is not None:
+            print(f"Pretrained path: {cfg.policy.pretrained_path}")
+            if (
+                cfg.policy.pretrained_path is not None
+                and Path(cfg.policy.pretrained_path).exists()
+            ):
                 fn = list(Path(cfg.policy.pretrained_path).glob("*.safetensors"))[
                     0
                 ].as_posix()

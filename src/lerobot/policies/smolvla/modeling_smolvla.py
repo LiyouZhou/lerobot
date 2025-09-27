@@ -464,7 +464,10 @@ class SmolVLAPolicy(PreTrainedPolicy):
         actions = self.prepare_action(batch)
         actions_is_pad = batch.get("actions_id_pad")
         loss_dict = {}
-        losses = self.model.forward(images, img_masks, lang_tokens, lang_masks, state, actions, noise, time)
+        losses, ground_truth_actions, predicted_actions = self.model.forward(
+            images, img_masks, lang_tokens, lang_masks, state, actions, noise,
+            time, return_outputs=True
+        )
         loss_dict["losses_after_forward"] = losses.clone()
 
         if actions_is_pad is not None:
@@ -480,6 +483,11 @@ class SmolVLAPolicy(PreTrainedPolicy):
         loss = losses.mean()
         # For backward pass
         loss_dict["loss"] = loss.item()
+
+        # return the predicted action to log fine-grained statistics
+        loss_dict["predicted_actions"] = predicted_actions
+        loss_dict["ground_truth_actions"] = ground_truth_actions
+
         return loss, loss_dict
 
     def prepare_images(self, batch):
@@ -833,8 +841,8 @@ class VLAFlowMatching(nn.Module):
         return embs, pad_masks, att_masks
 
     def forward(
-        self, images, img_masks, lang_tokens, lang_masks, state, actions, noise=None, time=None
-    ) -> Tensor:
+        self, images, img_masks, lang_tokens, lang_masks, state, actions, noise=None, time=None, return_outputs=False
+    ) -> Tensor | tuple[Tensor, Tensor, Tensor]:
         """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
         if noise is None:
             noise = self.sample_noise(actions.shape, actions.device)
@@ -868,6 +876,10 @@ class VLAFlowMatching(nn.Module):
         suffix_out = suffix_out.to(dtype=torch.float32)
         v_t = self.action_out_proj(suffix_out)
         losses = F.mse_loss(u_t, v_t, reduction="none")
+
+        if return_outputs:
+            return losses, u_t, v_t
+
         return losses
 
     def sample_actions(self, images, img_masks, lang_tokens, lang_masks, state, noise=None) -> Tensor:
