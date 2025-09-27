@@ -286,6 +286,7 @@ def train(rank: int, cfg: TrainPipelineConfig):
             repo_root=cfg.dataset.root,
             batch_size=cfg.batch_size,
             shuffle=shuffle,
+            remember_color_only=cfg.remember_color_only
         )
 
         dataloader = torch.utils.data.DataLoader(
