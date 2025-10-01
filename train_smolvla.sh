@@ -53,6 +53,7 @@ python src/lerobot/scripts/train.py \
     --policy.push_to_hub=false \
     --policy.use_amp=false \
     --policy.memory=$MEMORY \
+    --policy.scheduler_type="cosine_annealing_with_warm_restarts" \
     --dataset.repo_id=mikasa_robo_tfds_all_1.0.0_lerobot \
     --dataset.root=/home/lz307/rds/hpc-work/lerobot/data/mikasa_robo_tfds_all_1.0.0_lerobot \
     --wandb.run_id=$RUN_ID \

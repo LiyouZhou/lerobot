@@ -19,6 +19,7 @@ from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
 from lerobot.optim.optimizers import AdamWConfig
 from lerobot.optim.schedulers import (
     CosineDecayWithWarmupSchedulerConfig,
+    CosineAnnealingWarmRestartsConfig
 )
 
 
@@ -82,6 +83,8 @@ class SmolVLAConfig(PreTrainedConfig):
     scheduler_decay_steps: int = 30_000
     scheduler_decay_lr: float = 2.5e-6
 
+    scheduler_type: str = "cosine_decay_with_warmup"
+
     vlm_model_name: str = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"  # Select the VLM backbone.
     load_vlm_weights: bool = False  # Set to True in case of training the expert from scratch. True when init from pretrained SmolVLA weights
 
@@ -136,12 +139,17 @@ class SmolVLAConfig(PreTrainedConfig):
         )
 
     def get_scheduler_preset(self):
-        return CosineDecayWithWarmupSchedulerConfig(
-            peak_lr=self.optimizer_lr,
-            decay_lr=self.scheduler_decay_lr,
-            num_warmup_steps=self.scheduler_warmup_steps,
-            num_decay_steps=self.scheduler_decay_steps,
-        )
+        if self.scheduler_type == "cosine_decay_with_warmup":
+            return CosineDecayWithWarmupSchedulerConfig(
+                peak_lr=self.optimizer_lr,
+                decay_lr=self.scheduler_decay_lr,
+                num_warmup_steps=self.scheduler_warmup_steps,
+                num_decay_steps=self.scheduler_decay_steps,
+            )
+        elif self.scheduler_type == "cosine_annealing_with_warm_restarts":
+            return CosineAnnealingWarmRestartsConfig()
+        else:
+            raise RuntimeError(f"unsupported scheduler type {self.scheduler_type}")
 
     @property
     def observation_delta_indices(self) -> list:
