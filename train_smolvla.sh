@@ -41,9 +41,6 @@ fi
 TS=$(date +"%y%m%d_%H%M%S")
 RUN_ID="${DATA_SET}_${BASE_MODEL_NAME}_B${BATCH_SIZE}_E${EPISODIC}_M${MEMORY}_S${SEED}_${TS}"
 
-SLURM_JOBID=${SLURM_JOBID:-"1234567"}
-export MASTER_PORT=$(expr 10000 + $(echo -n $SLURM_JOBID | tail -c 4))
-
 python src/lerobot/scripts/train.py \
     --policy.$BASE_MODEL_CONFIG_FIELD_NAME=$BASE_MODEL \
     --policy.chunk_size=50 \
