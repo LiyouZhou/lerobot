@@ -155,6 +155,11 @@ def update_policy(
     train_metrics.lr = optimizer.param_groups[0]["lr"]
     train_metrics.update_s = time.perf_counter() - start_time
 
+    for group_id in range(len(optimizer.param_groups)):
+        wandb.log(
+            {f"train/lr/{group_id}": optimizer.param_groups[group_id]["lr"]}
+        )
+
     ground_truth_actions = output_dict["ground_truth_actions"]
     predicted_actions = output_dict["predicted_actions"]
     frame_indices = batch["frame_index"]

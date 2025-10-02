@@ -56,6 +56,7 @@ import math
 import os
 import re
 from collections import deque
+from typing import List
 
 import safetensors
 import torch
@@ -385,8 +386,15 @@ class SmolVLAPolicy(PreTrainedPolicy):
             checkpoint_keys_mapping="model._orig_mod.//model.",
         )
 
-    def get_optim_params(self) -> dict:
-        return self.parameters()
+    def get_optim_params(self) -> dict|List[dict]:
+        memory_params = list(self.model.vlm_with_expert.neural_memory_modules.parameters()) if self.config.memory else []
+        memory_param_ids = set(id(p) for p in memory_params)
+        rest_of_params = [p for p in self.parameters() if id(p) not in memory_param_ids]
+
+        return [
+            {"params": rest_of_params, "lr": self.config.optimizer_lr},
+            {"params": memory_params, "lr": self.config.memory_lr},
+        ]
 
     def _get_action_chunk(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
         for k in batch:
