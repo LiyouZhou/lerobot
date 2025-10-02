@@ -90,7 +90,7 @@ class MLPMemory(nn.Module):
         self.fc0.requires_grad = True
         self.fc1.requires_grad = True
 
-    def update(self, loss, adaptive_lr):
+    def update(self, loss, decay_factor, adaptive_lr):
         fc1_grad = torch.autograd.grad(
             loss, self.fc1, retain_graph=True, create_graph=True
         )[0]
@@ -99,9 +99,21 @@ class MLPMemory(nn.Module):
             loss, self.fc0, retain_graph=True, create_graph=True
         )[0]
 
+        # Check if past_surprise_fc0 and past_surprise_fc1 exist, if not initialize to zeros
+        if not hasattr(self, "past_surprise_fc0"):
+            self.past_surprise_fc0 = torch.zeros_like(fc0_grad)
+            self.past_surprise_fc1 = torch.zeros_like(fc1_grad)
+
         adaptive_lr = rearrange(adaptive_lr, "b () -> b 1 1", b=self.B)
-        self.fc0 = self.fc0 - adaptive_lr * fc0_grad
-        self.fc1 = self.fc1 - adaptive_lr * fc1_grad
+        decay_factor = rearrange(decay_factor, "b () -> b 1 1", b=self.B)
+        surprise_fc0 = decay_factor * self.past_surprise_fc0 - adaptive_lr * fc0_grad
+        surprise_fc1 = decay_factor * self.past_surprise_fc1 - adaptive_lr * fc1_grad
+
+        self.fc0 = self.fc0 + surprise_fc0
+        self.fc1 = self.fc1 + surprise_fc1
+
+        self.past_surprise_fc0 = surprise_fc0.clone().detach()
+        self.past_surprise_fc1 = surprise_fc1.clone().detach()
 
 
 class MemoryModule(nn.Module):
@@ -112,21 +124,13 @@ class MemoryModule(nn.Module):
         self.w_k = nn.Parameter(torch.empty(D, D))
         self.w_v = nn.Parameter(torch.empty(D, D))
         self.w_q = nn.Parameter(torch.empty(D, D))
-
-        # Don't detach here - we want gradients to flow back to self.M
-        # for each sample in the batch, create a [D, D] memory matrix initialised by self.M
-        self.current_M = MLPMemory()
-
-        # self.local_update_lr = nn.Parameter(
-        #     torch.tensor(local_update_lr)
-        # )  # wrap in nn.Parameter to make it trainable
         self.memory_gate = nn.Parameter(torch.ones(hidden_size) / 2)
-
+        self.lr_adaptor = nn.LazyLinear(1)
+        self.decay_factor_generator = nn.LazyLinear(1)
+        self.current_M = MLPMemory()
         self.initialised = False
 
         self.initialize_weights()
-
-        self.lr_adaptor = nn.LazyLinear(1)
 
     def initialize_weights(self):
         for p in (self.w_k, self.w_v, self.w_q):
@@ -165,9 +169,15 @@ class MemoryModule(nn.Module):
                 pred = self.current_M(K)  # [B, L, D]
                 pred = rearrange(pred, "b l d -> (b l) d")  # [B * L, D]
                 inner_l = F.mse_loss(pred, V)
-                adaptive_rl = self.lr_adaptor(rearrange(x, "b l d -> b (l d)")).sigmoid()
+                adaptive_rl = self.lr_adaptor(
+                    rearrange(x, "b l d -> b (l d)")
+                ).sigmoid()
+                decay_factor = self.decay_factor_generator(
+                    rearrange(x, "b l d -> b (l d)")
+                ).sigmoid()
                 self.current_M.update(
                     inner_l,
+                    decay_factor=decay_factor,
                     adaptive_lr=adaptive_rl,
                 )
                 self.last_inner_loss = inner_l.item()
@@ -178,7 +188,12 @@ class MemoryModule(nn.Module):
                 out_half = self.current_M(Q)  # [B, L, D]
 
         # 2) cast back to original input dtype
-        return out_half.to(x.dtype)
+        out_value = out_half.to(x.dtype)
+
+        self.cached_adaptive_rl = adaptive_rl.clone().detach()
+        self.cached_out_value = out_value.clone().detach()
+
+        return out_value
 
 
 class MemoryLlamaDecoderLayer(LlamaDecoderLayer):
