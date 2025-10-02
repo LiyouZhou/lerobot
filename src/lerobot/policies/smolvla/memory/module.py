@@ -90,7 +90,7 @@ class MLPMemory(nn.Module):
         self.fc0.requires_grad = True
         self.fc1.requires_grad = True
 
-    def update(self, loss, learning_rate):
+    def update(self, loss, adaptive_lr):
         fc1_grad = torch.autograd.grad(
             loss, self.fc1, retain_graph=True, create_graph=True
         )[0]
@@ -99,21 +99,19 @@ class MLPMemory(nn.Module):
             loss, self.fc0, retain_graph=True, create_graph=True
         )[0]
 
-        self.fc0 = self.fc0 - learning_rate * fc0_grad
-        self.fc1 = self.fc1 - learning_rate * fc1_grad
+        adaptive_lr = rearrange(adaptive_lr, "b () -> b 1 1", b=self.B)
+        self.fc0 = self.fc0 - adaptive_lr * fc0_grad
+        self.fc1 = self.fc1 - adaptive_lr * fc1_grad
 
 
 class MemoryModule(nn.Module):
-    def __init__(self, hidden_size, local_update_lr: float = 1.0):
+    def __init__(self, hidden_size):
         super().__init__()
         D = hidden_size
         self.M = None
         self.w_k = nn.Parameter(torch.empty(D, D))
         self.w_v = nn.Parameter(torch.empty(D, D))
         self.w_q = nn.Parameter(torch.empty(D, D))
-        self.learning_rate = nn.Parameter(
-            torch.tensor(local_update_lr, dtype=torch.float32)
-        )  # wrap in nn.Parameter to make it trainable
 
         # Don't detach here - we want gradients to flow back to self.M
         # for each sample in the batch, create a [D, D] memory matrix initialised by self.M
@@ -127,6 +125,8 @@ class MemoryModule(nn.Module):
         self.initialised = False
 
         self.initialize_weights()
+
+        self.lr_adaptor = nn.LazyLinear(1)
 
     def initialize_weights(self):
         for p in (self.w_k, self.w_v, self.w_q):
@@ -165,7 +165,11 @@ class MemoryModule(nn.Module):
                 pred = self.current_M(K)  # [B, L, D]
                 pred = rearrange(pred, "b l d -> (b l) d")  # [B * L, D]
                 inner_l = F.mse_loss(pred, V)
-                self.current_M.update(inner_l, learning_rate=self.learning_rate)
+                adaptive_rl = self.lr_adaptor(rearrange(x, "b l d -> b (l d)")).sigmoid()
+                self.current_M.update(
+                    inner_l,
+                    adaptive_lr=adaptive_rl,
+                )
                 self.last_inner_loss = inner_l.item()
 
                 # retrieval with the adapted memory
@@ -249,9 +253,6 @@ if __name__ == "__main__":
     )
     memory.to(device="cuda")
 
-    for name, param in memory.named_parameters():
-        print(name, param.shape, param.requires_grad)
-
     loss_window = []
     accuracy_window = []
     pbar = trange(10000)
@@ -301,8 +302,12 @@ if __name__ == "__main__":
                     "accuracy": f"{sum(accuracy_window)/len(loss_window):.03f}",
                     "params mean": f"{torch.mean(memory.w_k).item():.03f} {torch.mean(memory.w_v).item():.03f} {torch.mean(memory.w_q).item():.03f}",
                     "params std": f"{torch.std(memory.w_k).item():.03f} {torch.std(memory.w_v).item():.03f} {torch.std(memory.w_q).item():.03f}",
-                    "lr": f"{memory.learning_rate.item():.03f}",
+                    "lr": f"{torch.mean(memory.cached_adaptive_rl).item():.03f}, std: {torch.std(memory.cached_adaptive_rl).item():.03f}",
                 }
             )
 
             optimizer.zero_grad()
+
+        if iteration == 0:
+            for name, param in memory.named_parameters():
+                print(name, param.shape, param.requires_grad)
