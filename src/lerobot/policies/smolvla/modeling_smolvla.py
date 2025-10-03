@@ -77,6 +77,10 @@ from lerobot.policies.utils import (
 )
 from lerobot.utils.utils import get_safe_dtype
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Matches ".soNNN", optionally followed by "-something", up to the "_buffer_" marker
 _VARIANT_RE = re.compile(r"\.so\d+(?:-[\w]+)?_buffer_")
 
@@ -378,7 +382,16 @@ class SmolVLAPolicy(PreTrainedPolicy):
         map_location: str,
         strict: bool,
     ):
-        safetensors.torch.load_model(model, model_file, strict=strict, device=map_location)
+        mem_module = model.model.vlm_with_expert.neural_memory_modules[0][0]
+        if mem_module is not None and not mem_module.initialised:
+            logger.warning(
+                "[SmolVLAPolicy] The memory module is not initialized. Refusing to load model weights."
+            )
+            return model
+
+        safetensors.torch.load_model(
+            model, model_file, strict=strict, device=map_location
+        )
         return load_smolvla(
             model,
             model_file,

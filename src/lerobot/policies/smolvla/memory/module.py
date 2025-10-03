@@ -136,8 +136,6 @@ class MemoryModule(nn.Module):
         for p in (self.w_k, self.w_v, self.w_q):
             nn.init.xavier_uniform_(p)
 
-        self.initialised = True
-
     def reset_memory(self):
         if hasattr(self.current_M, "reset_memory") and callable(
             getattr(self.current_M, "reset_memory")
@@ -192,6 +190,10 @@ class MemoryModule(nn.Module):
 
         self.cached_adaptive_rl = adaptive_rl.clone().detach()
         self.cached_out_value = out_value.clone().detach()
+
+        # All parameters are initialized after the first forward pass
+        if not self.initialised:
+            self.initialised = True
 
         return out_value
 

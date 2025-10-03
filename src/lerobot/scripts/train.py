@@ -117,7 +117,10 @@ def update_policy(
 
             if batch["frame_index"][0].cpu().tolist() == 0:
                 print("Frame 0, Resetting memory")
-                policy.module.model.vlm_with_expert.reset_memory()
+                if isinstance(policy, DDP):
+                    policy.module.model.vlm_with_expert.reset_memory()
+                else:
+                    policy.model.vlm_with_expert.reset_memory()
             loss, output_dict = policy(batch)
             loss_accumulated += loss
             # TODO(rcadene): policy.unnormalize_outputs(out_dict)
@@ -256,11 +259,6 @@ def train(rank: int, cfg: TrainPipelineConfig):
             cfg.checkpoint_path, optimizer, lr_scheduler
         )
 
-    num_learnable_params = sum(
-        p.numel() for p in policy.parameters() if p.requires_grad
-    )
-    num_total_params = sum(p.numel() for p in policy.parameters())
-
     dataset_thread.join()
     dataset = dataset_result["dataset"]
     logging.info(
@@ -271,8 +269,6 @@ def train(rank: int, cfg: TrainPipelineConfig):
     logging.info(f"{cfg.steps=} ({format_big_number(cfg.steps)})")
     logging.info(f"{dataset.num_frames=} ({format_big_number(dataset.num_frames)})")
     logging.info(f"{dataset.num_episodes=}")
-    logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
-    logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
     # create dataloader for offline training
     if hasattr(cfg.policy, "drop_n_last_frames"):
@@ -316,7 +312,6 @@ def train(rank: int, cfg: TrainPipelineConfig):
 
     dl_iter = cycle(dataloader)
 
-    policy = DDP(policy, device_ids=[device])
     policy.train()
 
     train_metrics = {
@@ -357,7 +352,10 @@ def train(rank: int, cfg: TrainPipelineConfig):
             logging.info(
                 "First step completed which means memory has finished initialization. Now load mem initialisation weights."
             )
-            print(f"Pretrained path: {cfg.policy.pretrained_path}")
+
+            # Wrap in data parallel wrapper
+            policy = DDP(policy, device_ids=[device])
+
             if (
                 cfg.policy.pretrained_path is not None
                 and Path(cfg.policy.pretrained_path).exists()
@@ -368,6 +366,17 @@ def train(rank: int, cfg: TrainPipelineConfig):
                 load_smolvla(policy.module, fn, device=device)
 
                 policy.module.model.vlm_with_expert.reset_memory()
+
+                num_learnable_params = sum(
+                    p.numel() for p in policy.parameters() if p.requires_grad
+                )
+                num_total_params = sum(p.numel() for p in policy.parameters())
+                logging.info(
+                    f"{num_learnable_params=} ({format_big_number(num_learnable_params)})"
+                )
+                logging.info(
+                    f"{num_total_params=} ({format_big_number(num_total_params)})"
+                )
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
