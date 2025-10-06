@@ -172,19 +172,15 @@ class MemoryModule(nn.Module):
         # 1) run all inner‐loop math in half precision
         with torch.amp.autocast(device_type="cuda", enabled=True, dtype=torch.float16):
             with torch.enable_grad():
-                x_flat = rearrange(x, "b l d -> (b l) d")  # [B * L, D]
-
-                K = x_flat @ self.w_k.t()  # [B * L, D]
-                V = x_flat @ self.w_v.t()  # [B * L, D]
+                K = x @ self.w_k.t()  # [B, L, D]
+                V = x @ self.w_v.t()  # [B, L, D]
 
                 # Detach adapted memory from previous step
                 # For the purpose of outter loop, the memory is a constant
                 self.current_M.detach()
 
                 # inner‐loop loss & gradient wrt current_M (first-order)
-                K = rearrange(K, "(b l) d -> b l d", b=B, l=L)  # [B, L, D]
                 pred = self.current_M(K)  # [B, L, D]
-                pred = rearrange(pred, "b l d -> (b l) d")  # [B * L, D]
                 inner_l = F.mse_loss(pred, V)
                 adaptive_rl = self.lr_adaptor(
                     rearrange(x, "b l d -> b (l d)")
@@ -200,14 +196,13 @@ class MemoryModule(nn.Module):
                 self.last_inner_loss = inner_l.item()
 
                 # retrieval with the adapted memory
-                Q = x_flat @ self.w_q.t()  # [B * L, D]
-                Q = rearrange(Q, "(b l) d -> b l d", b=B, l=L)  # [B, L, D]
+                Q = x @ self.w_q.t()  # [B, L, D]
                 out_half = self.current_M(Q)  # [B, L, D]
 
         # 2) cast back to original input dtype
         out_value = out_half.to(x.dtype)
 
-        self.cached_adaptive_rl = adaptive_rl.clone().detach()
+        self.cached_adaptive_lr = adaptive_rl.clone().detach()
         self.cached_out_value = out_value.clone().detach()
 
         # All parameters are initialized after the first forward pass
