@@ -60,7 +60,7 @@ class MLPMemory(nn.Module):
         B, L, D = x.shape
         if not hasattr(self, "fc0"):
             self.create_weights(batch_size=B, embed_len=L, hidden_size=D)
-        
+
         if self.fc0.shape[0] != B:
             self.B = B
             self.reset_memory()
@@ -280,21 +280,29 @@ if __name__ == "__main__":
 
     optimizer = torch.optim.Adam(
         list(memory.parameters()) + list(final_linear_layer.parameters()),
-        lr=1e-4,
+        lr=1e-5,
     )
     memory.to(device="cuda")
 
     loss_window = []
     accuracy_window = []
+    fc0_grad_window = []
+    fc1_grad_window = []
     pbar = trange(10000)
+    test = False
     for iteration in pbar:
+        if test:
+            memory.eval()
+            batch_size = 32
+
+        batch_size = random.randint(14, 16)
         x = torch.randn(
             batch_size, episode_len, hidden_size, hidden_size
         )  # [episodes in batch, steps in episode, features]
 
         # hide some privileged information in the second frame
         gt = [random.randint(0, 3)] * batch_size
-        for j in range(3):
+        for j in range(0, 3):
             for i in range(batch_size):
                 x[i, j, :, :] += torch.ones(hidden_size, hidden_size) * gt[i]
 
@@ -302,41 +310,65 @@ if __name__ == "__main__":
         memory.reset_memory()
         x = x.to(device="cuda")
         inner_losses = []
+        loss = torch.tensor(0.0).to(device="cuda")
         # iterate through the steps in the episodes
         for step in range(x.shape[1]):
             out = memory(x[:, step, :, :])
             inner_losses.append(memory.last_inner_loss)
             y_pred = rearrange(out, "b d1 d2 -> b (d1 d2)")
-
             # Project y_pred into logits
             logits = final_linear_layer(y_pred)
 
             # Cross entropy loss between logits and gt
-            loss = F.cross_entropy(logits, torch.tensor(gt, device=x.device))
+            if not test:
+                if step > 0:
+                    loss += F.cross_entropy(logits, torch.tensor(gt, device=x.device))
+            else:
+                loss = torch.tensor(0.0)
+
+            if step > 0:
+                loss_window.append(loss.item())
+                accuracy_window.append(
+                    (logits.argmax(dim=-1) == torch.tensor(gt, device=x.device))
+                    .float()
+                    .mean()
+                    .item()
+                )
+                fc0_grad_window.append(
+                    torch.mean(memory.current_M.cached_fc0_grad).item() * 1e5
+                )
+                fc1_grad_window.append(
+                    torch.mean(memory.current_M.cached_fc1_grad).item() * 1e5
+                )
+                if len(loss_window) > 500:
+                    loss_window.pop(0)
+                    accuracy_window.pop(0)
+                    fc0_grad_window.pop(0)
+                    fc1_grad_window.pop(0)
+
+                pbar.set_postfix(
+                    {
+                        "Loss": f"{sum(loss_window)/len(loss_window):.03f}",
+                        "accuracy": f"{sum(accuracy_window)/len(loss_window):.03f}",
+                        # "params mean": f"{torch.mean(memory.w_k).item():.03f} {torch.mean(memory.w_v).item():.03f} {torch.mean(memory.w_q).item():.03f}",
+                        # "params std": f"{torch.std(memory.w_k).item():.03f} {torch.std(memory.w_v).item():.03f} {torch.std(memory.w_q).item():.03f}",
+                        # "lr": f"{torch.mean(memory.cached_adaptive_lr).item():.03f}, std: {torch.std(memory.cached_adaptive_lr).item():.03f}",
+                        "fc0_grad": f"{sum(fc0_grad_window)/len(fc0_grad_window):.03f}",
+                        "fc1_grad": f"{sum(fc1_grad_window)/len(fc1_grad_window):.03f}",
+                    }
+                )
+
+                average_accuracy = (
+                    sum(accuracy_window) / len(accuracy_window)
+                    if accuracy_window
+                    else 0
+                )
+                if len(accuracy_window) > 300 and average_accuracy > 0.80:
+                    test = True
+
+        if not test:
             loss.backward()
             optimizer.step()
-
-            loss_window.append(loss.item())
-            accuracy_window.append(
-                (logits.argmax(dim=-1) == torch.tensor(gt, device=x.device))
-                .float()
-                .mean()
-                .item()
-            )
-            if len(loss_window) > 500:
-                loss_window.pop(0)
-                accuracy_window.pop(0)
-
-            pbar.set_postfix(
-                {
-                    "Loss": f"{sum(loss_window)/len(loss_window):.03f}",
-                    "accuracy": f"{sum(accuracy_window)/len(loss_window):.03f}",
-                    "params mean": f"{torch.mean(memory.w_k).item():.03f} {torch.mean(memory.w_v).item():.03f} {torch.mean(memory.w_q).item():.03f}",
-                    "params std": f"{torch.std(memory.w_k).item():.03f} {torch.std(memory.w_v).item():.03f} {torch.std(memory.w_q).item():.03f}",
-                    "lr": f"{torch.mean(memory.cached_adaptive_rl).item():.03f}, std: {torch.std(memory.cached_adaptive_rl).item():.03f}",
-                }
-            )
-
             optimizer.zero_grad()
 
         if iteration == 0:
