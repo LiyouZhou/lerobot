@@ -58,8 +58,12 @@ class MLPMemory(nn.Module):
 
     def forward(self, x):
         B, L, D = x.shape
-        if not hasattr(self, "fc0") or self.fc0.shape[0] != B:
+        if not hasattr(self, "fc0"):
             self.create_weights(batch_size=B, embed_len=L, hidden_size=D)
+        
+        if self.fc0.shape[0] != B:
+            self.B = B
+            self.reset_memory()
 
         # B x L x D bmm B X D X D -> B x L x D
         a0 = torch.bmm(x, self.fc0)
@@ -81,6 +85,7 @@ class MLPMemory(nn.Module):
             # let the first inference call create the weights
             return
 
+        # put the weights back to the initial state
         self.fc0 = repeat(
             self._saved_weights[0].clone().detach(), "... -> b ...", b=self.B
         )
