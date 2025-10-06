@@ -95,19 +95,27 @@ class MLPMemory(nn.Module):
         self.fc0.requires_grad = True
         self.fc1.requires_grad = True
 
+        self.reset_past_surprise()
+
     def update(self, loss, decay_factor, adaptive_lr):
-        fc1_grad = torch.autograd.grad(
-            loss, self.fc1, retain_graph=True, create_graph=True
-        )[0]
+        # Check if past_surprise_fc0 and past_surprise_fc1 exist, if not initialize to zeros
+        if not hasattr(self, "past_surprise_fc0"):
+            self.past_surprise_fc0 = torch.zeros_like(self.fc0)
+            self.past_surprise_fc1 = torch.zeros_like(self.fc1)
 
         fc0_grad = torch.autograd.grad(
             loss, self.fc0, retain_graph=True, create_graph=True
         )[0]
+        fc1_grad = torch.autograd.grad(
+            loss, self.fc1, retain_graph=True, create_graph=True
+        )[0]
 
-        # Check if past_surprise_fc0 and past_surprise_fc1 exist, if not initialize to zeros
-        if not hasattr(self, "past_surprise_fc0"):
-            self.past_surprise_fc0 = torch.zeros_like(fc0_grad)
-            self.past_surprise_fc1 = torch.zeros_like(fc1_grad)
+        # remove effect of batch size on the gradient
+        fc0_grad = 0.1 * fc0_grad * self.B
+        fc1_grad = 0.1 * fc1_grad * self.B
+
+        self.cached_fc0_grad = fc0_grad.clone().detach()
+        self.cached_fc1_grad = fc1_grad.clone().detach()
 
         adaptive_lr = rearrange(adaptive_lr, "b () -> b 1 1", b=self.B)
         decay_factor = rearrange(decay_factor, "b () -> b 1 1", b=self.B)
@@ -119,6 +127,12 @@ class MLPMemory(nn.Module):
 
         self.past_surprise_fc0 = surprise_fc0.clone().detach()
         self.past_surprise_fc1 = surprise_fc1.clone().detach()
+
+    def reset_past_surprise(self):
+        if hasattr(self, "past_surprise_fc0"):
+            del self.past_surprise_fc0
+        if hasattr(self, "past_surprise_fc1"):
+            del self.past_surprise_fc1
 
 
 class MemoryModule(nn.Module):
