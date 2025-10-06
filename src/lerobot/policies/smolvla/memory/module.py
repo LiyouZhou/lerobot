@@ -114,8 +114,8 @@ class MLPMemory(nn.Module):
         fc0_grad = 0.1 * fc0_grad * self.B
         fc1_grad = 0.1 * fc1_grad * self.B
 
-        self.cached_fc0_grad = fc0_grad.clone().detach()
-        self.cached_fc1_grad = fc1_grad.clone().detach()
+        # self.cached_fc0_grad = fc0_grad.clone().detach()
+        # self.cached_fc1_grad = fc1_grad.clone().detach()
 
         adaptive_lr = rearrange(adaptive_lr, "b () -> b 1 1", b=self.B)
         decay_factor = rearrange(decay_factor, "b () -> b 1 1", b=self.B)
@@ -202,8 +202,8 @@ class MemoryModule(nn.Module):
         # 2) cast back to original input dtype
         out_value = out_half.to(x.dtype)
 
-        self.cached_adaptive_lr = adaptive_rl.clone().detach()
-        self.cached_out_value = out_value.clone().detach()
+        # self.cached_adaptive_lr = adaptive_rl.clone().detach()
+        # self.cached_out_value = out_value.clone().detach()
 
         # All parameters are initialized after the first forward pass
         if not self.initialised:
