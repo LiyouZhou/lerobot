@@ -367,16 +367,17 @@ def train(rank: int, cfg: TrainPipelineConfig):
 
                 policy.module.model.vlm_with_expert.reset_memory()
 
-                num_learnable_params = sum(
-                    p.numel() for p in policy.parameters() if p.requires_grad
-                )
-                num_total_params = sum(p.numel() for p in policy.parameters())
-                logging.info(
-                    f"{num_learnable_params=} ({format_big_number(num_learnable_params)})"
-                )
-                logging.info(
-                    f"{num_total_params=} ({format_big_number(num_total_params)})"
-                )
+            # Log number of parameters
+            num_learnable_params = sum(
+                p.numel() for p in policy.parameters() if p.requires_grad
+            )
+            num_total_params = sum(p.numel() for p in policy.parameters())
+            logging.info(
+                f"{num_learnable_params=} ({format_big_number(num_learnable_params)})"
+            )
+            logging.info(
+                f"{num_total_params=} ({format_big_number(num_total_params)})"
+            )
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
