@@ -58,6 +58,7 @@ import re
 from collections import deque
 from typing import List
 
+from lerobot.policies.smolvla.memory.module import MemoryModule
 import safetensors
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -383,7 +384,7 @@ class SmolVLAPolicy(PreTrainedPolicy):
         strict: bool,
     ):
         mem_module = model.model.vlm_with_expert.neural_memory_modules[0][0]
-        if mem_module is not None and not mem_module.initialised:
+        if isinstance(mem_module, MemoryModule) and not mem_module.initialised:
             logger.warning(
                 "[SmolVLAPolicy] The memory module is not initialized. Refusing to load model weights."
             )
