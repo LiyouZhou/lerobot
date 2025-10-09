@@ -383,7 +383,7 @@ class SmolVLAPolicy(PreTrainedPolicy):
         map_location: str,
         strict: bool,
     ):
-        mem_module = model.model.vlm_with_expert.neural_memory_modules[0][0]
+        mem_module = model.model.vlm_with_expert.neural_memory_modules[1][0]
         if isinstance(mem_module, MemoryModule) and not mem_module.initialised:
             logger.warning(
                 "[SmolVLAPolicy] The memory module is not initialized. Refusing to load model weights."

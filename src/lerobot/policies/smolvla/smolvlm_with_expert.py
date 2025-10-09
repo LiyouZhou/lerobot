@@ -96,29 +96,6 @@ class SmolVLMWithExpertModel(nn.Module):
         if memory:
             print(f"Creating {self.num_vlm_layers} neural memory modules of hidden_size {config.text_config.hidden_size}")
 
-        class PlaceholderModule(nn.Module):
-            def forward(self, x):
-                return x  # does nothing
-
-        self.neural_memory_modules = nn.ModuleList(
-            [
-                nn.ModuleList(
-                    [
-                        (
-                            MemoryModule(config.text_config.hidden_size)
-                            if memory
-                            else PlaceholderModule()
-                        )
-                        for _ in range(self.num_vlm_layers)
-                    ]
-                ),
-                nn.ModuleList(
-                    [PlaceholderModule() for _ in range(self.num_vlm_layers)]
-                ),
-            ]
-        )
-        self.neural_memory_modules[0][-1] = PlaceholderModule()  # No memory in the last layer
-    
         self.config = config
         # Smaller lm expert
         lm_expert_config = copy.deepcopy(config.text_config)
@@ -163,6 +140,28 @@ class SmolVLMWithExpertModel(nn.Module):
         self.set_requires_grad()
 
         self.step_counter = 0
+
+        class PlaceholderModule(nn.Module):
+            def forward(self, x):
+                return x  # does nothing
+
+        self.neural_memory_modules = nn.ModuleList(
+            [
+                nn.ModuleList(
+                    [PlaceholderModule() for _ in range(self.num_vlm_layers)]
+                ),
+                nn.ModuleList(
+                    [
+                        (
+                            MemoryModule(lm_expert_config.hidden_size)
+                            if memory
+                            else PlaceholderModule()
+                        )
+                        for _ in range(self.num_vlm_layers)
+                    ]
+                )
+            ]
+        )
 
     def reset_memory(self):
         for i in range(len(self.neural_memory_modules)):
