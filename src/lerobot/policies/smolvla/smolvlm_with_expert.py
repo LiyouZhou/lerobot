@@ -25,6 +25,8 @@ from transformers import (
 )
 from lerobot.policies.smolvla.memory.module import MemoryModule
 import wandb
+from einops import repeat
+from einops.layers.torch import Rearrange
 
 
 def apply_rope(x, positions, max_wavelength=10_000):
@@ -93,9 +95,6 @@ class SmolVLMWithExpertModel(nn.Module):
             self.get_vlm_model().text_model.layers = self.get_vlm_model().text_model.layers[:num_vlm_layers]
         self.num_vlm_layers = len(self.get_vlm_model().text_model.layers)
 
-        if memory:
-            print(f"Creating {self.num_vlm_layers} neural memory modules of hidden_size {config.text_config.hidden_size}")
-
         self.config = config
         # Smaller lm expert
         lm_expert_config = copy.deepcopy(config.text_config)
@@ -110,11 +109,15 @@ class SmolVLMWithExpertModel(nn.Module):
             lm_expert_config.num_hidden_layers = num_expert_layers
         self.lm_expert = AutoModel.from_config(lm_expert_config)
 
+        # remove first layer because the input comes entirely from the vlm side
+        # the first layer of expert is skipped.
+        self.lm_expert.layers[0] = None
+
         self.num_expert_layers = len(self.lm_expert.layers)
         self.self_attn_every_n_layers = self_attn_every_n_layers
         if "cross" in attention_mode:
             # Reshape qkv projections to have the same input dimension as the vlm
-            for layer_idx in range(len(self.lm_expert.layers)):
+            for layer_idx in range(1, len(self.lm_expert.layers)):
                 if self.self_attn_every_n_layers > 0 and layer_idx % self.self_attn_every_n_layers == 0:
                     continue
                 self.lm_expert.layers[layer_idx].self_attn.k_proj = nn.Linear(
@@ -127,6 +130,22 @@ class SmolVLMWithExpertModel(nn.Module):
                     lm_expert_config.num_key_value_heads * lm_expert_config.head_dim,
                     bias=lm_expert_config.attention_bias,
                 )
+
+        self.vlm_expert_size_adapter = nn.Sequential(
+            nn.Linear(
+                config.text_config.hidden_size,
+                lm_expert_config.hidden_size,
+                bias=False
+            ),
+            Rearrange('b l d -> b d l'),
+            nn.Linear(
+                113,
+                50,
+                bias=False
+            ),
+            Rearrange('b d l -> b l d')
+        )
+
         # Remove unused embed_tokens
         self.lm_expert.embed_tokens = None
 
@@ -145,6 +164,9 @@ class SmolVLMWithExpertModel(nn.Module):
             def forward(self, x):
                 return x  # does nothing
 
+        if memory:
+            print(f"Creating {self.num_vlm_layers} neural memory modules of hidden_size {config.text_config.hidden_size}")
+
         self.neural_memory_modules = nn.ModuleList(
             [
                 nn.ModuleList(
@@ -154,10 +176,10 @@ class SmolVLMWithExpertModel(nn.Module):
                     [
                         (
                             MemoryModule(lm_expert_config.hidden_size)
-                            if memory
+                            if memory and i > 0
                             else PlaceholderModule()
                         )
-                        for _ in range(self.num_vlm_layers)
+                        for i in range(self.num_vlm_layers)
                     ]
                 )
             ]
@@ -554,7 +576,38 @@ class SmolVLMWithExpertModel(nn.Module):
 
                     start = end if len(att_outputs) == 1 else 0
                 else:
-                    outputs_embeds.append(None)
+                    if i == 1:
+                        # expert did not have any input, we project the vlm
+                        # output to the expert input for the next layer
+                        dtype = next(self.vlm_expert_size_adapter.parameters()).dtype
+
+
+                        out_emb = self.vlm_expert_size_adapter(
+                            att_outputs[0].to(
+                                dtype=dtype
+                            )
+                        )
+
+                        outputs_embeds.append(out_emb)
+                        # extend position_ids by the expert sequence length
+                        batch_size = position_ids.shape[0]
+                        expert_position_ids = torch.ones(
+                            (batch_size, out_emb.shape[1]),
+                            device=position_ids.device,
+                            dtype=position_ids.dtype)
+                        expert_position_ids = torch.cumsum(expert_position_ids, dim=1)
+                        expert_position_ids += repeat(position_ids[:, -1], 'b -> b n', n=out_emb.shape[1])
+                        position_ids = torch.cat([position_ids, expert_position_ids], dim=1)
+
+                        new_attention_mask = torch.zeros(
+                            (batch_size, position_ids.shape[1], position_ids.shape[1])
+                        ).to(attention_mask.device)
+                        # Copy attention_mask into the first part of new_attention_mask
+                        seq_len = attention_mask.shape[1]
+                        new_attention_mask[:, :seq_len, :seq_len] = attention_mask
+                        attention_mask = new_attention_mask.to(attention_mask.dtype)
+                    else:
+                        outputs_embeds.append(None)
 
             inputs_embeds = outputs_embeds
 
