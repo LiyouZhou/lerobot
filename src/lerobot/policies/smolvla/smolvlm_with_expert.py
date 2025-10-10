@@ -138,11 +138,7 @@ class SmolVLMWithExpertModel(nn.Module):
                 bias=False
             ),
             Rearrange('b l d -> b d l'),
-            nn.Linear(
-                113,
-                50,
-                bias=False
-            ),
+            nn.LazyLinear(50),
             Rearrange('b d l -> b l d')
         )
 
