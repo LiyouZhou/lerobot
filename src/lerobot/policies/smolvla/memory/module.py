@@ -170,34 +170,33 @@ class MemoryModule(nn.Module):
         B, L, D = x.shape  # step: [batch_size, embed_length, hidden_size]
 
         # 1) run all inner‐loop math in half precision
-        with torch.amp.autocast(device_type="cuda", enabled=True, dtype=torch.float16):
-            with torch.enable_grad():
-                K = x @ self.w_k.t()  # [B, L, D]
-                V = x @ self.w_v.t()  # [B, L, D]
+        with torch.enable_grad():
+            K = x @ self.w_k.t()  # [B, L, D]
+            V = x @ self.w_v.t()  # [B, L, D]
 
-                # Detach adapted memory from previous step
-                # For the purpose of outter loop, the memory is a constant
-                self.current_M.detach()
+            # Detach adapted memory from previous step
+            # For the purpose of outter loop, the memory is a constant
+            self.current_M.detach()
 
-                # inner‐loop loss & gradient wrt current_M (first-order)
-                pred = self.current_M(K)  # [B, L, D]
-                inner_l = F.mse_loss(pred, V)
-                adaptive_rl = self.lr_adaptor(
-                    rearrange(x, "b l d -> b (l d)")
-                ).sigmoid()
-                decay_factor = self.decay_factor_generator(
-                    rearrange(x, "b l d -> b (l d)")
-                ).sigmoid()
-                self.current_M.update(
-                    inner_l,
-                    decay_factor=decay_factor,
-                    adaptive_lr=adaptive_rl,
-                )
-                self.last_inner_loss = inner_l.item()
+            # inner‐loop loss & gradient wrt current_M (first-order)
+            pred = self.current_M(K)  # [B, L, D]
+            inner_l = F.mse_loss(pred, V)
+            adaptive_rl = self.lr_adaptor(
+                rearrange(x, "b l d -> b (l d)")
+            ).sigmoid()
+            decay_factor = self.decay_factor_generator(
+                rearrange(x, "b l d -> b (l d)")
+            ).sigmoid()
+            self.current_M.update(
+                inner_l,
+                decay_factor=decay_factor,
+                adaptive_lr=adaptive_rl,
+            )
+            self.last_inner_loss = inner_l.item()
 
-                # retrieval with the adapted memory
-                Q = x @ self.w_q.t()  # [B, L, D]
-                out_half = self.current_M(Q)  # [B, L, D]
+            # retrieval with the adapted memory
+            Q = x @ self.w_q.t()  # [B, L, D]
+            out_half = self.current_M(Q)  # [B, L, D]
 
         # 2) cast back to original input dtype
         out_value = out_half.to(x.dtype)
@@ -280,7 +279,7 @@ if __name__ == "__main__":
 
     optimizer = torch.optim.Adam(
         list(memory.parameters()) + list(final_linear_layer.parameters()),
-        lr=1e-5,
+        lr=1e-3,
     )
     memory.to(device="cuda")
 
@@ -334,17 +333,17 @@ if __name__ == "__main__":
                     .mean()
                     .item()
                 )
-                fc0_grad_window.append(
-                    torch.mean(memory.current_M.cached_fc0_grad).item() * 1e5
-                )
-                fc1_grad_window.append(
-                    torch.mean(memory.current_M.cached_fc1_grad).item() * 1e5
-                )
+                # fc0_grad_window.append(
+                #     torch.mean(memory.current_M.cached_fc0_grad).item() * 1e5
+                # )
+                # fc1_grad_window.append(
+                #     torch.mean(memory.current_M.cached_fc1_grad).item() * 1e5
+                # )
                 if len(loss_window) > 500:
                     loss_window.pop(0)
                     accuracy_window.pop(0)
-                    fc0_grad_window.pop(0)
-                    fc1_grad_window.pop(0)
+                    # fc0_grad_window.pop(0)
+                    # fc1_grad_window.pop(0)
 
                 pbar.set_postfix(
                     {
@@ -353,8 +352,8 @@ if __name__ == "__main__":
                         # "params mean": f"{torch.mean(memory.w_k).item():.03f} {torch.mean(memory.w_v).item():.03f} {torch.mean(memory.w_q).item():.03f}",
                         # "params std": f"{torch.std(memory.w_k).item():.03f} {torch.std(memory.w_v).item():.03f} {torch.std(memory.w_q).item():.03f}",
                         # "lr": f"{torch.mean(memory.cached_adaptive_lr).item():.03f}, std: {torch.std(memory.cached_adaptive_lr).item():.03f}",
-                        "fc0_grad": f"{sum(fc0_grad_window)/len(fc0_grad_window):.03f}",
-                        "fc1_grad": f"{sum(fc1_grad_window)/len(fc1_grad_window):.03f}",
+                        # "fc0_grad": f"{sum(fc0_grad_window)/len(fc0_grad_window):.03f}",
+                        # "fc1_grad": f"{sum(fc1_grad_window)/len(fc1_grad_window):.03f}",
                     }
                 )
 
