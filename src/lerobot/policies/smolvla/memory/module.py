@@ -168,6 +168,8 @@ class MemoryModule(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         B, L, D = x.shape  # step: [batch_size, embed_length, hidden_size]
+        input_dtype = x.dtype
+        x = x.to(dtype=self.w_k.dtype)
 
         # 1) run all inner‐loop math in half precision
         with torch.enable_grad():
@@ -196,10 +198,7 @@ class MemoryModule(nn.Module):
 
             # retrieval with the adapted memory
             Q = x @ self.w_q.t()  # [B, L, D]
-            out_half = self.current_M(Q)  # [B, L, D]
-
-        # 2) cast back to original input dtype
-        out_value = out_half.to(x.dtype)
+            out_value = self.current_M(Q)  # [B, L, D]
 
         # self.cached_adaptive_lr = adaptive_rl.clone().detach()
         # self.cached_out_value = out_value.clone().detach()
@@ -208,7 +207,7 @@ class MemoryModule(nn.Module):
         if not self.initialised:
             self.initialised = True
 
-        return out_value
+        return out_value.to(dtype=input_dtype)
 
 
 class MemoryLlamaDecoderLayer(LlamaDecoderLayer):
