@@ -133,7 +133,7 @@ def update_policy(
     grad_norm = torch.nn.utils.clip_grad_norm_(
         policy.parameters(),
         grad_clip_norm,
-        error_if_nonfinite=False,
+        error_if_nonfinite=True,
     )
 
     # Optimizer's gradients are already unscaled, so scaler.step does not unscale them,
@@ -196,6 +196,8 @@ def update_policy(
 
 
 def train(rank: int, cfg: TrainPipelineConfig):
+    torch.autograd.set_detect_anomaly(True)
+
     cfg.validate()
     logging.info(pformat(cfg.to_dict()))
 
