@@ -19,8 +19,8 @@ if [ "$EPISODIC" = "true" ] && [ "$MIKASA_COLOR" = "true" ]; then
     DATA_SET="mikasa_color"
 fi
 
-if [ "$MIKASA_COLOR" = "true" ] && [ "$EPISODIC" = "false" ]; then
-    echo "Warning: MIKASA_COLOR is true but EPISODIC is false. Exiting."
+if [ "$MEMORY" = "true" ] && [ "$EPISODIC" = "false" ]; then
+    echo "Warning: MEMORY is true but EPISODIC is false. Exiting."
     exit 1
 fi
 
@@ -32,6 +32,7 @@ if [ -d "$BASE_MODEL" ]; then
     BASE_MODEL_NAME="${CHECKPOINT_TIMESTAMP}-${STEP_NUMBER}"
     BASE_MODEL_NAME="${BASE_MODEL_NAME//_/-}"
 fi
+BASE_MODEL_NAME="${BASE_MODEL_NAME//\//-}"
 
 BASE_MODEL_CONFIG_FIELD_NAME="path"
 if [ "$BASE_MODEL" = "smolvla" ]; then
@@ -43,6 +44,7 @@ RUN_ID="${DATA_SET}_${BASE_MODEL_NAME}_B${BATCH_SIZE}_E${EPISODIC}_M${MEMORY}_S$
 
 python src/lerobot/scripts/train.py \
     --policy.$BASE_MODEL_CONFIG_FIELD_NAME=$BASE_MODEL \
+    --policy.pad_language_to="max_length" \
     --policy.chunk_size=50 \
     --policy.n_action_steps=1 \
     --policy.num_steps=10 \
