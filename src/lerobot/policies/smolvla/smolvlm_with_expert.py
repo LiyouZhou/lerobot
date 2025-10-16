@@ -549,21 +549,31 @@ class SmolVLMWithExpertModel(nn.Module):
                     mem_emb_norm = mem_emb.norm(p=2).item() if isinstance(neural_memory, MemoryModule) else 0.0
                     norm_ratio = (mem_emb_norm / mlp_emb_norm) if mlp_emb_norm > 0 else 0.0
                     out_emb_norm = out_emb.norm(p=2).item()
-                    out_emb_norm_ratio = (out_emb_norm / (mlp_emb_norm + mlp_emb_norm)) if mlp_emb_norm > 0 else 0.0
+                    out_emb_norm_ratio = (out_emb_norm / (mlp_emb_norm + mem_emb_norm)) if mlp_emb_norm > 0 else 0.0
+                    if isinstance(neural_memory, MemoryModule):
+                        surprise_fc0 = neural_memory.current_M.past_surprise_fc0
+                        surprise_fc1 = neural_memory.current_M.past_surprise_fc1
+                        surprise_norm = torch.norm(surprise_fc0, p=2) + torch.norm(surprise_fc1, p=2)
+                        memory_norm = torch.norm(neural_memory.current_M.fc0, p=2) + torch.norm(neural_memory.current_M.fc1, p=2)
+                    else:
+                        surprise_norm = 0.0
+                        memory_norm = 0.0
 
                     gate_mag = neural_memory.memory_gate.abs().mean().item() if isinstance(neural_memory, MemoryModule) else 0.0
                     current_training_step = int(os.environ.get('CURRENT_TRAINING_STEP', 0))
                     if wandb.run is not None:
                         wandb.log({
-                            f"memory_gate_magnitude/layer_{i}_{layer_idx}": gate_mag,
-                            f"mse_out_emb_vs_mlp_emb/layer_{i}_{layer_idx}": mse,
-                            f"mem_emb_norm/layer_{i}_{layer_idx}": mem_emb_norm,
-                            f"mlp_emb_norm/layer_{i}_{layer_idx}": mlp_emb_norm,
-                            f"norm_ratio_mem_vs_mlp/layer_{i}_{layer_idx}": norm_ratio,
-                            f"out_emb_norm/layer_{i}_{layer_idx}": out_emb_norm,
-                            f"out_emb_norm_ratio/layer_{i}_{layer_idx}": out_emb_norm_ratio,
-                            "training_step": current_training_step,
-                            "inner_steps": self.step_counter
+                            f"mem_debug/memory_gate_magnitude/layer_{i}_{layer_idx}": gate_mag,
+                            f"mem_debug/mse_out_emb_vs_mlp_emb/layer_{i}_{layer_idx}": mse,
+                            f"mem_debug/mem_emb_norm/layer_{i}_{layer_idx}": mem_emb_norm,
+                            f"mem_debug/mlp_emb_norm/layer_{i}_{layer_idx}": mlp_emb_norm,
+                            f"mem_debug/norm_ratio_mem_vs_mlp/layer_{i}_{layer_idx}": norm_ratio,
+                            f"mem_debug/out_emb_norm/layer_{i}_{layer_idx}": out_emb_norm,
+                            f"mem_debug/out_emb_norm_ratio/layer_{i}_{layer_idx}": out_emb_norm_ratio,
+                            f"mem_debug/surprise_norm/layer_{i}_{layer_idx}": surprise_norm,
+                            f"mem_debug/memory_norm/layer_{i}_{layer_idx}": memory_norm,
+                            "mem_debug/training_step": current_training_step,
+                            "mem_debug/inner_steps": self.step_counter,
                         })
 
                     out_emb += after_first_residual

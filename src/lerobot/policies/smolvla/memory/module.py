@@ -111,8 +111,8 @@ class MLPMemory(nn.Module):
         )[0]
 
         # remove effect of batch size on the gradient
-        fc0_grad = 0.1 * fc0_grad * self.B
-        fc1_grad = 0.1 * fc1_grad * self.B
+        fc0_grad = fc0_grad * self.B
+        fc1_grad = fc1_grad * self.B
 
         # self.cached_fc0_grad = fc0_grad.clone().detach()
         # self.cached_fc1_grad = fc1_grad.clone().detach()

@@ -20,6 +20,7 @@ from contextlib import nullcontext
 from pprint import pformat
 from typing import Any
 from pathlib import Path
+from collections import defaultdict
 
 import torch
 from termcolor import colored
@@ -78,6 +79,47 @@ def ddp_setup(rank: int, world_size: int):
     torch.cuda.set_device(rank)
     init_process_group(backend="nccl", rank=rank, world_size=world_size)
 
+
+def log_detailed_mse(output_dict, batch):
+    global table
+
+    ground_truth_actions = output_dict["ground_truth_actions"]
+    predicted_actions = output_dict["predicted_actions"]
+    frame_indices = batch["frame_index"]
+    task_indices = batch["task_index"]
+
+    # Calculate and log per-frame and per-task MSE
+    mse = F.mse_loss(predicted_actions, ground_truth_actions, reduction="none")
+    mse_per_sample = mse.mean(dim=1)  # Mean over action dimensions
+    mse_per_sample = mse_per_sample.mean(dim=1)  # Mean over action dimensions
+
+    current_training_step = int(os.environ.get("CURRENT_TRAINING_STEP", 0))
+    task_indices = task_indices.tolist()
+    frame_indices = frame_indices.tolist()
+
+    task_mse_dict = defaultdict(list)
+    frame_mse_dict = defaultdict(list)
+    task_frame_mse_dict = defaultdict(list)
+
+    for idx, (task_idx, frame_idx) in enumerate(zip(task_indices, frame_indices)):
+        sample_loss = mse_per_sample[idx].item()
+        task_mse_dict[task_idx].append(sample_loss)
+        frame_mse_dict[frame_idx].append(sample_loss)
+        task_frame_mse_dict[(task_idx, frame_idx)].append(sample_loss)
+
+    task_averages = {k: sum(v) / len(v) for k, v in task_mse_dict.items()}
+    frame_averages = {k: sum(v) / len(v) for k, v in frame_mse_dict.items()}
+
+    log_dict = {}
+    for task_idx, avg_mse in task_averages.items():
+        log_dict[f"detailed_mse/task_{task_idx}"] = avg_mse
+    for frame_idx, avg_mse in frame_averages.items():
+        log_dict[f"detailed_mse/frame_{frame_idx}"] = avg_mse
+    log_dict["detailed_mse/mse/overall"] = mse_per_sample.mean().item()
+    log_dict["detailed_mse/step"] = current_training_step
+
+    if wandb.run is not None:
+        wandb.log(log_dict)
 
 def update_policy(
     train_metrics: MetricsTracker,
@@ -158,39 +200,14 @@ def update_policy(
     train_metrics.lr = optimizer.param_groups[0]["lr"]
     train_metrics.update_s = time.perf_counter() - start_time
 
+    wandb.log({"loss": loss})
+
     for group_id in range(len(optimizer.param_groups)):
         wandb.log(
             {f"train/lr/{group_id}": optimizer.param_groups[group_id]["lr"]}
         )
 
-    ground_truth_actions = output_dict["ground_truth_actions"]
-    predicted_actions = output_dict["predicted_actions"]
-    frame_indices = batch["frame_index"]
-    task_indices = batch["task_index"]
-
-    # Calculate and log per-frame and per-task MSE
-    mse = F.mse_loss(predicted_actions, ground_truth_actions, reduction="none")
-    mse_per_sample = mse.mean(dim=1)  # Mean over action dimensions
-    mse_per_sample = mse_per_sample.mean(dim=1)  # Mean over action dimensions
-
-    current_training_step = int(os.environ.get("CURRENT_TRAINING_STEP", 0))
-    for idx, task_idx in enumerate(task_indices.tolist()):
-        task_loss = mse_per_sample[idx].item()
-
-        wandb.log(
-            {
-                f"task_mse/task_{task_idx}": task_loss,
-                f"task_mse/training_step": current_training_step,
-
-            }
-        )
-
-    wandb.log(
-        {
-            f"frame_mse/frame_{frame_indices[0].cpu().tolist()}": loss_accumulated.item(),
-            f"frame_mse/training_step": current_training_step,
-        }
-    )
+    log_detailed_mse(output_dict, batch)
 
     return train_metrics, output_dict
 
@@ -366,6 +383,7 @@ def train(rank: int, cfg: TrainPipelineConfig):
                     0
                 ].as_posix()
                 load_smolvla(policy.module, fn, device=device)
+                wandb.watch(policy.module, log="all", log_freq=100, log_graph=True)
 
                 policy.module.model.vlm_with_expert.reset_memory()
 
