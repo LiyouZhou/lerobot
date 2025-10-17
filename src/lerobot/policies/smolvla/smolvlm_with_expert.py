@@ -551,10 +551,18 @@ class SmolVLMWithExpertModel(nn.Module):
                     out_emb_norm = out_emb.norm(p=2).item()
                     out_emb_norm_ratio = (out_emb_norm / (mlp_emb_norm + mem_emb_norm)) if mlp_emb_norm > 0 else 0.0
                     if isinstance(neural_memory, MemoryModule):
-                        surprise_fc0 = neural_memory.current_M.past_surprise_fc0
-                        surprise_fc1 = neural_memory.current_M.past_surprise_fc1
-                        surprise_norm = torch.norm(surprise_fc0, p=2) + torch.norm(surprise_fc1, p=2)
-                        memory_norm = torch.norm(neural_memory.current_M.fc0, p=2) + torch.norm(neural_memory.current_M.fc1, p=2)
+                        batch_size = neural_memory.current_M.fc0.shape[0]
+                        surprise_fc0 = 0
+                        surprise_fc1 = 0
+                        memory_fc0 = 0
+                        memory_fc1 = 0
+                        for j in range(batch_size):
+                            surprise_fc0 += neural_memory.current_M.past_surprise_fc0[j].norm(p=2)
+                            memory_fc0 += neural_memory.current_M.fc0[j].norm(p=2)
+                            surprise_fc1 += neural_memory.current_M.past_surprise_fc1[j].norm(p=2)
+                            memory_fc1 += neural_memory.current_M.fc1[j].norm(p=2)
+                        surprise_norm = (surprise_fc0 + surprise_fc1) / (2 * batch_size)
+                        memory_norm = (memory_fc0 + memory_fc1) / (2 * batch_size)
                     else:
                         surprise_norm = 0.0
                         memory_norm = 0.0
