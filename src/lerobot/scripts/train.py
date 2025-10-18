@@ -133,7 +133,7 @@ def update_policy(
     use_amp: bool = False,
     lock=None,
     device_type: str = "cuda",
-    num_accumulation_steps: int = 1,
+    num_accumulation_steps: int = 10,
 ) -> tuple[MetricsTracker, dict]:
     start_time = time.perf_counter()
     # device = get_device_from_parameters(policy)
