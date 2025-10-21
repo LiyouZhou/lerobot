@@ -114,6 +114,10 @@ class MLPMemory(nn.Module):
         fc0_grad = fc0_grad * self.B
         fc1_grad = fc1_grad * self.B
 
+        # clip gradients
+        fc0_grad = torch.clamp(fc0_grad, -1.0, 1.0)
+        fc1_grad = torch.clamp(fc1_grad, -1.0, 1.0)
+
         # self.cached_fc0_grad = fc0_grad.clone().detach()
         # self.cached_fc1_grad = fc1_grad.clone().detach()
 
