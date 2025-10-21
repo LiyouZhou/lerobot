@@ -142,7 +142,7 @@ class EpisodicBatchSampler(Sampler):
             )
 
             episode_length = self.task_info[sampled_task_index]["episode_length"]
-            for frame_index in range(episode_length):
+            for frame_index in range(1, episode_length):
                 all_indices = []
                 for sampled_episode_index in sampled_episode_indices:
                     # Get all indices for the sampled episode within the 
