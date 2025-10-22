@@ -157,8 +157,8 @@ def update_policy(
 
             # assert batch["frame_index"].shape[0] == 1, "Batch size must be 1"
 
-            if batch["frame_index"][0].cpu().tolist() == 1:
-                print("Frame 1, Resetting memory")
+            if batch["frame_index"][0].cpu().tolist() == 0:
+                print("Frame 0, Resetting memory")
                 if isinstance(policy, DDP):
                     policy.module.model.vlm_with_expert.reset_memory()
                 else:
