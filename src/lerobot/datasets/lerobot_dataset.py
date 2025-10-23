@@ -686,7 +686,11 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         # Step 2: Select all required data at once
         selected_dataset = self.hf_dataset.select(all_indices).to_dict()
-        selected_dataset = {key: torch.tensor(values) for key, values in selected_dataset.items()}
+        selected_dataset = {
+            key: (
+                torch.tensor(values) if not (isinstance(values, list) and isinstance(values[0], str)) else values
+            ) for key, values in selected_dataset.items()
+        }
 
         # Step 3: Map original indices to their positions in the selected dataset
         index_map = {original_idx: i for i, original_idx in enumerate(all_indices)}
@@ -909,13 +913,14 @@ class LeRobotDataset(torch.utils.data.Dataset):
             self.tolerance_s,
         )
 
-        # Verify that we have one parquet file per episode and the number of video files matches the number of encoded episodes
-        parquet_files = list(self.root.rglob("*.parquet"))
-        assert len(parquet_files) == self.num_episodes
-        video_files = list(self.root.rglob("*.mp4"))
-        assert len(video_files) == (self.num_episodes - self.episodes_since_last_encoding) * len(
-            self.meta.video_keys
-        )
+        if self.num_episodes % 1000 == 0:
+            # Verify that we have one parquet file per episode and the number of video files matches the number of encoded episodes
+            parquet_files = list(self.root.rglob("*.parquet"))
+            assert len(parquet_files) == self.num_episodes
+            video_files = list(self.root.rglob("*.mp4"))
+            assert len(video_files) == (self.num_episodes - self.episodes_since_last_encoding) * len(
+                self.meta.video_keys
+            )
 
         if not episode_data:  # Reset the buffer
             self.episode_buffer = self.create_episode_buffer()

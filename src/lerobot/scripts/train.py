@@ -155,7 +155,25 @@ def update_policy(
                         device, non_blocking=device_type == "cuda"
                     )
 
-            # assert batch["frame_index"].shape[0] == 1, "Batch size must be 1"
+            # Keep track of previous frame indices across calls
+            if not hasattr(update_policy, "prev_frame_idx"):
+                update_policy.prev_frame_idx = None
+
+            # Current frame indices (move to CPU for stable comparison)
+            current_frame_idx = batch["frame_index"].detach().cpu()
+
+            # Build a per-sample keep mask: True -> keep, False -> mask out
+            if update_policy.prev_frame_idx is None or update_policy.prev_frame_idx.shape[0] != current_frame_idx.shape[0]:
+                keep_mask_cpu = torch.ones(current_frame_idx.shape[0], dtype=torch.bool)
+            else:
+                keep_mask_cpu = current_frame_idx != update_policy.prev_frame_idx
+
+            # Save current frame indices for next iteration
+            update_policy.prev_frame_idx = current_frame_idx
+
+            # Move mask to device
+            keep_mask = keep_mask_cpu.to(device)
+            batch["keep_mask"] = keep_mask
 
             if batch["frame_index"][0].cpu().tolist() == 0:
                 print("Frame 0, Resetting memory")

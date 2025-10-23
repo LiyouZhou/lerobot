@@ -73,7 +73,6 @@ class EpisodicBatchSampler(Sampler):
         self.repo_root = repo_root
         self.dataset_index_df = pd.read_csv(Path(repo_root) / "dataset_index.csv")
 
-        self.task_info = {}
         self.episode_counts = []
         for task_index in self.dataset_index_df["task_index"].unique():
             task_df = self.dataset_index_df[
@@ -85,20 +84,14 @@ class EpisodicBatchSampler(Sampler):
             episode_length = max_frame_index + 1
 
             self.episode_counts.append((task_index, episode_count, episode_length))
-            self.task_info[task_index] = {
-                "episode_count": episode_count,
-                "episode_length": episode_length,
-            }
-
-            assert (
-                task_df.groupby("episode_index")["frame_index"].nunique().nunique() == 1
-            ), f"Task {task_index} has episodes of varying lengths"
 
         # Extract task indices and their episode counts
         self.task_indices = [t[0] for t in self.episode_counts]
         self.episode_counts_list = [t[1] for t in self.episode_counts]
 
-        self.task_probabilities = np.array(self.episode_counts_list) / np.sum(self.episode_counts_list)
+        self.task_probabilities = np.array(self.episode_counts_list) / np.sum(
+            self.episode_counts_list
+        )
         # ('5', 'touch the red cube')
         # ('11', 'touch the maroon cube')
         # ('21', 'touch the orange cube')
@@ -122,36 +115,34 @@ class EpisodicBatchSampler(Sampler):
 
     def __iter__(self):
         for _ in range(len(self.dataset_index_df) // self.batch_size):
-            # Sample a task index with probability proportional to episode count
-            sampled_task_index = np.random.choice(
-                self.task_indices,
-                p=self.task_probabilities,
+            # sample a batch of episodes
+            sampled_episode_indices = np.random.choice(
+                self.dataset_index_df["episode_index"].unique(),
+                self.batch_size,
             )
 
-            # Filter the dataframe for the sampled task index
-            task_df = self.dataset_index_df[
-                self.dataset_index_df["task_index"] == sampled_task_index
+            # Get all rows corresponding to the sampled episode
+            sampled_episodes_df = self.dataset_index_df[
+                self.dataset_index_df["episode_index"].isin(sampled_episode_indices)
             ]
 
-            # Get all unique episode indices for this task
-            episode_indices = task_df["episode_index"].unique()
+            # Count how many rows in the dataframe correspond to each episode
+            episode_lengths = sampled_episodes_df["episode_index"].value_counts()
+            max_episode_length = episode_lengths.max()
 
-            # Sample batch_size episodes index uniformly
-            sampled_episode_indices = np.random.choice(
-                episode_indices, size=self.batch_size, replace=True
-            )
-
-            episode_length = self.task_info[sampled_task_index]["episode_length"]
-            for frame_index in range(episode_length):
+            for frame_index in range(max_episode_length):
                 all_indices = []
                 for sampled_episode_index in sampled_episode_indices:
-                    # Get all indices for the sampled episode within the 
+                    sampled_frame_index = (
+                        frame_index
+                        if frame_index < episode_lengths[sampled_episode_index]
+                        else episode_lengths[sampled_episode_index] - 1
+                    )
+                    # Get all indices for the sampled episode within the
                     # sampled task at the current frame index
-                    episode_indices_df = task_df[
-                        task_df["episode_index"] == sampled_episode_index
-                    ]
-                    sample = episode_indices_df[
-                        episode_indices_df["frame_index"] == frame_index
+                    sample = sampled_episodes_df[
+                        (sampled_episodes_df["episode_index"] == sampled_episode_index)
+                        & (sampled_episodes_df["frame_index"] == sampled_frame_index)
                     ]
                     assert (
                         len(sample) == 1
@@ -161,3 +152,33 @@ class EpisodicBatchSampler(Sampler):
 
     def __len__(self):
         return len(self.dataset_index_df)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--repo_root", type=str, required=True, help="Path to the repository root"
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=4, help="Batch size for sampling"
+    )
+    parser.add_argument(
+        "--length", type=int, default=20, help="Number of batches to sample"
+    )
+
+    args = parser.parse_args()
+
+    # Example usage
+    sampler = EpisodicBatchSampler(
+        repo_root=args.repo_root,
+        batch_size=args.batch_size,
+        shuffle=True,
+        remember_color_only=False,
+    )
+
+    for i, batch in enumerate(sampler):
+        print(f"Batch {i}: {batch}")
+        if i >= args.length:
+            break

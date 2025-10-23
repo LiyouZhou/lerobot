@@ -501,8 +501,9 @@ class SmolVLAPolicy(PreTrainedPolicy):
         losses = losses[:, :, : self.config.max_action_dim]
         loss_dict["losses_after_rm_padding"] = losses.clone()
 
-        # For backward pass
-        loss = losses.mean()
+        # For backward pass, apply the loss mask in the batch dimension
+        loss = losses[batch["keep_mask"]].mean()
+
         # For backward pass
         loss_dict["loss"] = loss.item()
 
