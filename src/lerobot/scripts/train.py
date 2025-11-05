@@ -81,12 +81,10 @@ def ddp_setup(rank: int, world_size: int):
 
 
 def log_detailed_mse(output_dict, batch):
-    global table
-
     ground_truth_actions = output_dict["ground_truth_actions"]
     predicted_actions = output_dict["predicted_actions"]
     frame_indices = batch["frame_index"]
-    task_indices = batch["task_index"]
+    task_names = batch["task_name"]
 
     # Calculate and log per-frame and per-task MSE
     mse = F.mse_loss(predicted_actions, ground_truth_actions, reduction="none")
@@ -94,27 +92,24 @@ def log_detailed_mse(output_dict, batch):
     mse_per_sample = mse_per_sample.mean(dim=1)  # Mean over action dimensions
 
     current_training_step = int(os.environ.get("CURRENT_TRAINING_STEP", 0))
-    task_indices = task_indices.tolist()
     frame_indices = frame_indices.tolist()
 
     task_mse_dict = defaultdict(list)
     frame_mse_dict = defaultdict(list)
-    task_frame_mse_dict = defaultdict(list)
 
-    for idx, (task_idx, frame_idx) in enumerate(zip(task_indices, frame_indices)):
+    for idx, (task_name, frame_idx) in enumerate(zip(task_names, frame_indices)):
         sample_loss = mse_per_sample[idx].item()
-        task_mse_dict[task_idx].append(sample_loss)
+        task_mse_dict[task_name].append(sample_loss)
         frame_mse_dict[frame_idx].append(sample_loss)
-        task_frame_mse_dict[(task_idx, frame_idx)].append(sample_loss)
 
     task_averages = {k: sum(v) / len(v) for k, v in task_mse_dict.items()}
     frame_averages = {k: sum(v) / len(v) for k, v in frame_mse_dict.items()}
 
     log_dict = {}
-    for task_idx, avg_mse in task_averages.items():
-        log_dict[f"detailed_mse/task_{task_idx}"] = avg_mse
+    for task_name, avg_mse in task_averages.items():
+        log_dict[f"detailed_mse/task/{task_name}"] = avg_mse
     for frame_idx, avg_mse in frame_averages.items():
-        log_dict[f"detailed_mse/frame_{frame_idx}"] = avg_mse
+        log_dict[f"detailed_mse/frame/{frame_idx}"] = avg_mse
     log_dict["detailed_mse/mse/overall"] = mse_per_sample.mean().item()
     log_dict["detailed_mse/step"] = current_training_step
 

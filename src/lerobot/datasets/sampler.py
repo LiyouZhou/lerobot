@@ -85,31 +85,18 @@ class EpisodicBatchSampler(Sampler):
 
             self.episode_counts.append((task_index, episode_count, episode_length))
 
-        # Extract task indices and their episode counts
+        # Set the allowable task indices
         self.task_indices = [t[0] for t in self.episode_counts]
-        self.episode_counts_list = [t[1] for t in self.episode_counts]
-
-        self.task_probabilities = np.array(self.episode_counts_list) / np.sum(
-            self.episode_counts_list
-        )
-        # ('5', 'touch the red cube')
-        # ('11', 'touch the maroon cube')
-        # ('21', 'touch the orange cube')
-        # ('16', 'touch the yellow cube')
-        # ('1', 'Memorize the the colors of the cube shown on the table, and then touch the same coloured cube out of all the cubes.')
-        # ('18', 'touch the purple cube')
-        # ('20', 'touch the green cube')
-        # ('19', 'touch the cyan cube')
-        # ('8', 'touch the teal cube')
-        # ('17', 'touch the blue cube')
-        remember_color_indices = [5, 11, 21, 16, 1, 18, 20, 19, 8, 17]
+        remember_color_indices = [8, 9, 11, 13, 16, 17, 18, 19, 20, 21]
         if remember_color_only:
-            # Set probability of non-remember_color tasks to 0
-            for i, task_index in enumerate(self.task_indices):
-                if task_index not in remember_color_indices:
-                    self.task_probabilities[i] = 0
-            # Re-normalize probabilities
-            self.task_probabilities /= np.sum(self.task_probabilities)
+            self.task_indices = [
+                t for t in self.task_indices if t in remember_color_indices
+            ]
+
+        # Get a list of episodes with allowable task indices
+        self.allowable_episodes_indices = self.dataset_index_df[
+            self.dataset_index_df["task_index"].isin(self.task_indices)
+        ]["episode_index"].unique()
 
         self.batch_size = batch_size
 
@@ -117,7 +104,7 @@ class EpisodicBatchSampler(Sampler):
         for _ in range(len(self.dataset_index_df) // self.batch_size):
             # sample a batch of episodes
             sampled_episode_indices = np.random.choice(
-                self.dataset_index_df["episode_index"].unique(),
+                self.allowable_episodes_indices,
                 self.batch_size,
             )
 
