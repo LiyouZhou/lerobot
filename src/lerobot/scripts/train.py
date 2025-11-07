@@ -451,7 +451,7 @@ def train(rank: int, cfg: TrainPipelineConfig):
                 use_wandb=True,
                 repo_path=cfg.dataset.root,
                 log_performance_graphs=False,
-                log_rollout_videos=False,
+                log_rollout_videos=is_saving_step, # only log videos when saving checkpoints
             )
             eval_mikasa(cfg=eval_cfg, model=policy.module, skip_wandb_init=True)
 
