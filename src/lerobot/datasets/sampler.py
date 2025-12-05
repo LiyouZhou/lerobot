@@ -69,7 +69,7 @@ class EpisodeAwareSampler:
 
 
 class EpisodicBatchSampler(Sampler):
-    def __init__(self, repo_root, batch_size, shuffle=True, remember_color_only=False):
+    def __init__(self, repo_root, batch_size, shuffle=True, allowable_task_names=None):
         self.repo_root = repo_root
         self.dataset_index_df = pd.read_csv(Path(repo_root) / "dataset_index.csv")
 
@@ -86,16 +86,16 @@ class EpisodicBatchSampler(Sampler):
             self.episode_counts.append((task_index, episode_count, episode_length))
 
         # Set the allowable task indices
-        self.task_indices = [t[0] for t in self.episode_counts]
-        remember_color_indices = [8, 9, 11, 13, 16, 17, 18, 19, 20, 21]
-        if remember_color_only:
-            self.task_indices = [
-                t for t in self.task_indices if t in remember_color_indices
-            ]
+        self.allowable_task_names = self.dataset_index_df["task_name"].unique().tolist()
+        if allowable_task_names is not None:
+            assert isinstance(allowable_task_names, list), "allowable_task_names should be a list"
+            for name in allowable_task_names:
+                assert name in self.allowable_task_names, f"Task name {name} is not in the dataset"
+            self.allowable_task_names = allowable_task_names
 
         # Get a list of episodes with allowable task indices
         self.allowable_episodes_indices = self.dataset_index_df[
-            self.dataset_index_df["task_index"].isin(self.task_indices)
+            self.dataset_index_df["task_name"].isin(self.allowable_task_names)
         ]["episode_index"].unique()
 
         self.batch_size = batch_size

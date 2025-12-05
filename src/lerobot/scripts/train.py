@@ -44,7 +44,7 @@ from lerobot.policies.factory import make_policy
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.utils import get_device_from_parameters
 from lerobot.scripts.eval import eval_policy
-from lerobot.scripts.run_mikasa_eval import eval_mikasa, GenerateConfig
+from lerobot.scripts.run_mikasa_eval import TEST_SUITES, eval_mikasa, GenerateConfig
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
 from lerobot.utils.random_utils import set_seed
 from lerobot.utils.train_utils import (
@@ -315,12 +315,32 @@ def train(rank: int, cfg: TrainPipelineConfig):
         sampler = None
 
     if cfg.episodic:
-        logging.info(f"Training Episodically")
+        all_task_names = []
+        for task_suite in TEST_SUITES.values():
+            for task in task_suite["tasks"]:
+                all_task_names.append(task["task_name"])
+        all_task_names = list(set(all_task_names))
+
+        allowable_task_names = []
+        if cfg.training_dataset_suite_name:
+            if cfg.training_dataset_suite_name in TEST_SUITES:
+                allowable_task_names = [
+                    task["task_name"]
+                    for task in TEST_SUITES[cfg.training_dataset_suite_name]["tasks"]
+                ]
+            elif cfg.training_dataset_suite_name in all_task_names:
+                allowable_task_names = [cfg.training_dataset_suite_name]
+            else:
+                raise ValueError(
+                    f"Training dataset suite name {cfg.training_dataset_suite_name} is not recognized."
+                )
+        logging.info(f"Training Episodically with tasks: {allowable_task_names}")
+
         batch_sampler = EpisodicBatchSampler(
             repo_root=cfg.dataset.root,
             batch_size=cfg.batch_size,
             shuffle=shuffle,
-            remember_color_only=cfg.remember_color_only
+            allowable_task_names=allowable_task_names,
         )
 
         dataloader = torch.utils.data.DataLoader(

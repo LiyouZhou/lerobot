@@ -67,7 +67,7 @@ class TrainPipelineConfig(HubMixin):
     episodic: bool = False # present data in episodic manner
 
     # limit dataset
-    remember_color_only: bool = False
+    training_dataset_suite_name: str | None = None
 
     # evaluation settings
     num_envs: int = 10
