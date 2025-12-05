@@ -445,7 +445,12 @@ def train(rank: int, cfg: TrainPipelineConfig):
         if rank == 0 and is_eval_step:
             logging.info(f"Eval policy at step {step}")
             eval_cfg = GenerateConfig(
-                task_suite_name="mikasa_remember_color",
+                task_suite_name=(
+                    cfg.eval.task_suite_name
+                    if cfg.eval.task_suite_name is not None
+                    else "mikasa_remember_color"
+                ),
+                model_action_scale=cfg.eval.model_action_scale,
                 num_envs=cfg.num_envs,
                 num_trials_per_task=cfg.num_trials_per_task,
                 use_wandb=True,

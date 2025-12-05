@@ -58,6 +58,8 @@ class EvalConfig:
     batch_size: int = 50
     # `use_async_envs` specifies whether to use asynchronous environments (multiprocessing).
     use_async_envs: bool = False
+    task_suite_name: str | None = None  # e.g. "d4rl-locomotion-medium-v0"
+    model_action_scale: float = 1.0                 # Scale for model output actions
 
     def __post_init__(self):
         if self.batch_size > self.n_episodes:

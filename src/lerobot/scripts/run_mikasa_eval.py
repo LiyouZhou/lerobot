@@ -216,6 +216,26 @@ TEST_SUITES["mikasa_baseline"] = {
     ]
 }
 
+TEST_SUITES["mikasa_subset"] = {
+    "tasks": [
+        task
+        for task in TEST_SUITES["mikasa"]["tasks"]
+        if (
+            ("RememberColor" in task["task_name"])
+            and ("baseline" not in task["task_name"])
+        )
+        or (task["task_name"] in ["ShellGameTouch-v0", "InterceptMedium-v0"])
+    ]
+}
+
+TEST_SUITES["mikasa_intercept"] = {
+    "tasks": [
+        task
+        for task in TEST_SUITES["mikasa"]["tasks"]
+        if "Intercept" in task["task_name"] and "Grab" not in task["task_name"]
+    ]
+}
+
 
 def center_crop(image, batch_size=1, crop_scale=0.9, return_pil_image=False):
     image = Image.fromarray(image)
