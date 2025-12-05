@@ -89,6 +89,7 @@ class GenerateConfig:
     load_in_4bit: bool = False                       # (For OpenVLA only) Load with 4-bit quantization
 
     center_crop: bool = True                         # Center crop? (if trained w/ random crop image aug)
+    model_action_scale: float = 10.0                 # Scale for model output actions
 
     #################################################################################################################
     # LIBERO environment-specific parameters
@@ -482,7 +483,7 @@ def eval_mikasa(
                     crop_scale=0.9 if cfg.center_crop else 1.0,
                 )
                 actions = torch.from_numpy(actions)
-                actions = actions * 10
+                actions = actions * cfg.model_action_scale
                 obs, reward, terminated, truncated, info = env.step(actions)
 
                 for i in range(num_envs):
