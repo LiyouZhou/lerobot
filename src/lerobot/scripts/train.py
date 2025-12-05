@@ -116,6 +116,7 @@ def log_detailed_mse(output_dict, batch):
     if wandb.run is not None:
         wandb.log(log_dict)
 
+
 def update_policy(
     train_metrics: MetricsTracker,
     policy: PreTrainedPolicy | DDP,
@@ -158,7 +159,10 @@ def update_policy(
             current_frame_idx = batch["frame_index"].detach().cpu()
 
             # Build a per-sample keep mask: True -> keep, False -> mask out
-            if update_policy.prev_frame_idx is None or update_policy.prev_frame_idx.shape[0] != current_frame_idx.shape[0]:
+            if (
+                update_policy.prev_frame_idx is None
+                or update_policy.prev_frame_idx.shape[0] != current_frame_idx.shape[0]
+            ):
                 keep_mask_cpu = torch.ones(current_frame_idx.shape[0], dtype=torch.bool)
             else:
                 keep_mask_cpu = current_frame_idx != update_policy.prev_frame_idx
@@ -216,9 +220,7 @@ def update_policy(
     wandb.log({"loss": loss})
 
     for group_id in range(len(optimizer.param_groups)):
-        wandb.log(
-            {f"train/lr/{group_id}": optimizer.param_groups[group_id]["lr"]}
-        )
+        wandb.log({f"train/lr/{group_id}": optimizer.param_groups[group_id]["lr"]})
 
     log_detailed_mse(output_dict, batch)
 
@@ -428,9 +430,7 @@ def train(rank: int, cfg: TrainPipelineConfig):
             logging.info(
                 f"{num_learnable_params=} ({format_big_number(num_learnable_params)})"
             )
-            logging.info(
-                f"{num_total_params=} ({format_big_number(num_total_params)})"
-            )
+            logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
@@ -476,7 +476,7 @@ def train(rank: int, cfg: TrainPipelineConfig):
                 use_wandb=True,
                 repo_path=cfg.dataset.root,
                 log_performance_graphs=False,
-                log_rollout_videos=is_saving_step, # only log videos when saving checkpoints
+                log_rollout_videos=is_saving_step,  # only log videos when saving checkpoints
             )
             eval_mikasa(cfg=eval_cfg, model=policy.module, skip_wandb_init=True)
 
