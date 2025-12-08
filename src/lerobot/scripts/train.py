@@ -75,7 +75,11 @@ def ddp_setup(rank: int, world_size: int):
        world_size: Total number of processes
     """
     os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = f"{random.randint(12000, 20000)}"
+
+    if world_size <= 1:
+        os.environ["MASTER_PORT"] = f"{random.randint(12000, 20000)}"
+    else:
+        os.environ["MASTER_PORT"] = "12378"
     torch.cuda.set_device(rank)
     init_process_group(backend="nccl", rank=rank, world_size=world_size)
 
