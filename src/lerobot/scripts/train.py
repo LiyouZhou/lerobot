@@ -247,7 +247,7 @@ def train(rank: int, cfg: TrainPipelineConfig):
         set_seed(cfg.seed)
 
     # Check device is available
-    device = get_safe_torch_device(cfg.policy.device, log=True)
+    device = torch.device(f"cuda:{rank}")
     device_type = device.type
 
     if torch.cuda.is_available() and device_type == "cuda":
