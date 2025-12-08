@@ -388,6 +388,9 @@ def train(rank: int, cfg: TrainPipelineConfig):
         initial_step=step,
     )
 
+    # Wrap in data parallel wrapper
+    policy = DDP(policy, device_ids=[device])
+
     logging.info("Start offline training on a fixed dataset")
     is_first_step = True
     for _ in trange(step, cfg.steps, position=rank, desc=f"Rank {rank}"):
@@ -410,9 +413,6 @@ def train(rank: int, cfg: TrainPipelineConfig):
             logging.info(
                 "First step completed which means memory has finished initialization. Now load mem initialisation weights."
             )
-
-            # Wrap in data parallel wrapper
-            policy = DDP(policy, device_ids=[device])
 
             if (
                 cfg.policy.pretrained_path is not None
