@@ -6,6 +6,7 @@ from einops import repeat, rearrange
 from transformers.models.llama.modeling_llama import LlamaMLP, LlamaDecoderLayer
 
 import torch.nn.functional as F
+import wandb
 
 
 class Memory(LlamaMLP):
@@ -83,6 +84,7 @@ class MLPMemory(nn.Module):
     def reset_memory(self):
         if not hasattr(self, "_saved_weights"):
             # let the first inference call create the weights
+            print("memory not initialized yet, skip reset_memory")
             return
 
         # put the weights back to the initial state
@@ -96,6 +98,15 @@ class MLPMemory(nn.Module):
         self.fc1.requires_grad = True
 
         self.reset_past_surprise()
+
+        # print("weights after reset:")
+        # print(self.fc0[0].norm(p=2), self.fc1[0].norm(p=2))
+
+        # print("past surprise after reset:")
+        # if hasattr(self, "past_surprise_fc0"):
+        #     print(self.past_surprise_fc0, self.past_surprise_fc1)
+        # else:
+        #     print("no past surprise")
 
     def update(self, loss, decay_factor, adaptive_lr):
         # Check if past_surprise_fc0 and past_surprise_fc1 exist, if not initialize to zeros
@@ -121,10 +132,30 @@ class MLPMemory(nn.Module):
         # self.cached_fc0_grad = fc0_grad.clone().detach()
         # self.cached_fc1_grad = fc1_grad.clone().detach()
 
+        # print(
+        #     "adaptive_lr:",
+        #     adaptive_lr.mean().item(),
+        #     "decay_factor:",
+        #     decay_factor.mean().item(),
+        # )
+        # print("fc0_grad shape", fc0_grad.shape, fc1_grad.shape)
+        # print("adaptive_lr shape", adaptive_lr.shape, decay_factor.shape)
         adaptive_lr = rearrange(adaptive_lr, "b () -> b 1 1", b=self.B)
         decay_factor = rearrange(decay_factor, "b () -> b 1 1", b=self.B)
+
         surprise_fc0 = decay_factor * self.past_surprise_fc0 - adaptive_lr * fc0_grad
         surprise_fc1 = decay_factor * self.past_surprise_fc1 - adaptive_lr * fc1_grad
+
+        if wandb.run is not None:
+            wandb.log(
+                {
+                    "mem_debug/fc0_grad_norm": fc0_grad.norm(p=2).mean().item(),
+                    "mem_debug/fc1_grad_norm": fc1_grad.norm(p=2).mean().item(),
+                    "mem_debug/decay_factor_mean": decay_factor.mean().item(),
+                    "mem_debug/adaptive_lr_mean": adaptive_lr.mean().item(),
+                },
+                step=int(os.environ.get("TRAINING_STEP", 0)),
+            )
 
         self.fc0 = self.fc0 + surprise_fc0
         self.fc1 = self.fc1 + surprise_fc1
@@ -140,18 +171,47 @@ class MLPMemory(nn.Module):
 
 
 class MemoryModule(nn.Module):
-    def __init__(self, hidden_size):
+    def __init__(self, hidden_size, inner_learning_rate=None, decay_factor=None):
         super().__init__()
         D = hidden_size
         self.M = None
         self.w_k = nn.Parameter(torch.empty(D, D))
         self.w_v = nn.Parameter(torch.empty(D, D))
         self.w_q = nn.Parameter(torch.empty(D, D))
-        self.memory_gate = nn.Parameter(torch.ones(hidden_size) / 2)
-        self.lr_adaptor = nn.LazyLinear(1)
-        self.decay_factor_generator = nn.LazyLinear(1)
         self.current_M = MLPMemory()
         self.initialised = False
+
+        class _ScaleModule(nn.Module):
+            def __init__(self, factor):
+                super().__init__()
+                self.register_buffer("factor", torch.tensor(factor))
+
+            def forward(self, x):
+                batch_size = x.shape[0]
+                ones = torch.ones((batch_size, 1), device=x.device)
+                return ones * self.factor
+
+        class _LinearAdaptor(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.adaptor = nn.Sequential(
+                    nn.LazyLinear(1),  # out_features = 1, in_features inferred lazily
+                    nn.Sigmoid(),
+                )
+
+            def forward(self, x):
+                return self.adaptor(x)
+
+        self.lr_adaptor = (
+            _LinearAdaptor()
+            if inner_learning_rate is None or inner_learning_rate == 0
+            else _ScaleModule(inner_learning_rate)
+        )
+        self.decay_factor_generator = (
+            _LinearAdaptor()
+            if decay_factor is None or decay_factor == 0
+            else _ScaleModule(decay_factor)
+        )
 
         self.initialize_weights()
 
@@ -187,16 +247,11 @@ class MemoryModule(nn.Module):
             # inner‐loop loss & gradient wrt current_M (first-order)
             pred = self.current_M(K)  # [B, L, D]
             inner_l = F.mse_loss(pred, V)
-            adaptive_rl = self.lr_adaptor(
-                rearrange(x, "b l d -> b (l d)")
-            ).sigmoid()
-            decay_factor = self.decay_factor_generator(
-                rearrange(x, "b l d -> b (l d)")
-            ).sigmoid()
+            x_flat = rearrange(x, "b l d -> b (l d)")
             self.current_M.update(
                 inner_l,
-                decay_factor=decay_factor,
-                adaptive_lr=adaptive_rl,
+                decay_factor=self.decay_factor_generator(x_flat),
+                adaptive_lr=self.lr_adaptor(x_flat),
             )
             self.last_inner_loss = inner_l.item()
 
@@ -272,17 +327,33 @@ class MemoryLlamaDecoderLayer(LlamaDecoderLayer):
 if __name__ == "__main__":
     from tqdm import trange
     import random
+    import os
 
     episode_len = 10
-    hidden_size = 100
-    batch_size = 16
-    embed_len = hidden_size
+    hidden_size = 1024
+    batch_size = 64
+    lr = 1e-4
+    inner_lr = 1e-3
+    decay_factor = 0.9
+
     final_linear_layer = nn.Linear(hidden_size * hidden_size, 4).to(device="cuda")
-    memory = MemoryModule(hidden_size=hidden_size)
+    memory = MemoryModule(
+        hidden_size=hidden_size, inner_learning_rate=inner_lr, decay_factor=decay_factor
+    ).to(device="cuda")
+
+    config = {
+        "episode_len": episode_len,
+        "hidden_size": hidden_size,
+        "batch_size": batch_size,
+        "lr": lr,
+        "inner_lr": inner_lr,
+        "decay_factor": decay_factor,
+    }
+    wandb.init(project="memory-module", config=config)
 
     optimizer = torch.optim.Adam(
         list(memory.parameters()) + list(final_linear_layer.parameters()),
-        lr=1e-3,
+        lr=lr,
     )
     memory.to(device="cuda")
 
@@ -293,26 +364,29 @@ if __name__ == "__main__":
     pbar = trange(10000)
     test = False
     for iteration in pbar:
+        os.environ["TRAINING_STEP"] = str(iteration)
+
         if test:
             memory.eval()
             batch_size = 32
 
-        batch_size = random.randint(14, 16)
+        # batch_size = random.randint(14, 16)
         x = torch.randn(
-            batch_size, episode_len, hidden_size, hidden_size
+            batch_size, episode_len, hidden_size, hidden_size, device="cuda"
         )  # [episodes in batch, steps in episode, features]
 
         # hide some privileged information in the second frame
-        gt = [random.randint(0, 3)] * batch_size
-        for j in range(0, 3):
+        gt = torch.randint(0, 4, (batch_size,), device="cuda")
+        for j in range(0, 1):
             for i in range(batch_size):
-                x[i, j, :, :] += torch.ones(hidden_size, hidden_size) * gt[i]
+                x[i, j, :, :] += (
+                    torch.ones(hidden_size, hidden_size, device="cuda") * gt[i]
+                )
 
         # Reset memory at the start of each batch
         memory.reset_memory()
         x = x.to(device="cuda")
         inner_losses = []
-        loss = torch.tensor(0.0).to(device="cuda")
         # iterate through the steps in the episodes
         for step in range(x.shape[1]):
             out = memory(x[:, step, :, :])
@@ -322,20 +396,32 @@ if __name__ == "__main__":
             logits = final_linear_layer(y_pred)
 
             # Cross entropy loss between logits and gt
-            if not test:
-                if step > 0:
-                    loss += F.cross_entropy(logits, torch.tensor(gt, device=x.device))
-            else:
-                loss = torch.tensor(0.0)
+            loss = F.cross_entropy(logits, torch.tensor(gt, device=x.device))
+            # if not test:
+            #     if step > 0:
+            #         loss += F.cross_entropy(logits, torch.tensor(gt, device=x.device))
+            # else:
+            #     loss = torch.tensor(0.0)
+
+            accuracy = (
+                (logits.argmax(dim=-1) == torch.tensor(gt, device=x.device))
+                .float()
+                .mean()
+                .item()
+            )
+
+            wandb.log(
+                {
+                    f"train/inner_loss/{step}": memory.last_inner_loss,
+                    f"train/loss/{step}": loss.item(),
+                    f"train/accuracy/{step}": accuracy,
+                },
+                step=iteration,
+            )
 
             if step > 0:
                 loss_window.append(loss.item())
-                accuracy_window.append(
-                    (logits.argmax(dim=-1) == torch.tensor(gt, device=x.device))
-                    .float()
-                    .mean()
-                    .item()
-                )
+                accuracy_window.append(accuracy)
                 # fc0_grad_window.append(
                 #     torch.mean(memory.current_M.cached_fc0_grad).item() * 1e5
                 # )
@@ -365,10 +451,10 @@ if __name__ == "__main__":
                     if accuracy_window
                     else 0
                 )
-                if len(accuracy_window) > 300 and average_accuracy > 0.80:
-                    test = True
+                # if len(accuracy_window) > 300 and average_accuracy > 0.80:
+                #     test = True
 
-        if not test:
+            # if not test:
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
