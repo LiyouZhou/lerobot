@@ -18,7 +18,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
-from torch.utils.data import Sampler
+from torch.utils.data import BatchSampler
 import torch
 
 
@@ -68,7 +68,7 @@ class EpisodeAwareSampler:
         return len(self.indices)
 
 
-class EpisodicBatchSampler(Sampler):
+class EpisodicBatchSampler(BatchSampler):
     def __init__(self, repo_root, batch_size, shuffle=True, allowable_task_names=None):
         self.repo_root = repo_root
         self.dataset_index_df = pd.read_csv(Path(repo_root) / "dataset_index.csv")
