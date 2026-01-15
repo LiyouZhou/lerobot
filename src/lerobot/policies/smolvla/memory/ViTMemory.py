@@ -1,29 +1,24 @@
 import torch.nn as nn
+from transformers import ViTImageProcessor
 from lerobot.policies.smolvla.memory.module import MemoryModule
 import timm
 from tqdm import trange
+from timm.data import resolve_data_config
+from timm.data.transforms_factory import create_transform
+from transformers import AutoImageProcessor, AutoModel
 
 
-class ViTwMemory(nn.Module):
+class VisionEncoderWithMemory(nn.Module):
     def __init__(
         self,
-        model_name="vit_base_patch16_224",
-        pretrained=True,
         memory_size=768,
         inner_lr=0.4,
         decay_factor=0.99,
         num_classes=10,
         enable_memory=True,
     ):
-        super(ViTwMemory, self).__init__()
+        super(VisionEncoderWithMemory, self).__init__()
         self.enable_memory = enable_memory
-        self.encoder = timm.create_model(
-            model_name=model_name,
-            pretrained=pretrained,
-            num_classes=0,  # No classification head
-            global_pool="",
-        )
-        self.encoder.reset_classifier(0)
 
         if self.enable_memory:
             self.memory = MemoryModule(
@@ -31,7 +26,7 @@ class ViTwMemory(nn.Module):
                 inner_learning_rate=inner_lr,
                 decay_factor=decay_factor,
             )
-        self.prediction_head = nn.Sequential(   
+        self.prediction_head = nn.Sequential(
             nn.LazyLinear(memory_size),
             nn.ReLU(),
             nn.LazyLinear(num_classes),
@@ -41,28 +36,94 @@ class ViTwMemory(nn.Module):
         num_heads = 4
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
-                d_model=hidden_dim,
-                nhead=num_heads,
-                batch_first=True
+                d_model=hidden_dim, nhead=num_heads, batch_first=True
             ),
-            num_layers=num_layers
+            num_layers=num_layers,
         )
 
+    def preprocess(self, images):
+        raise NotImplementedError("Subclasses should implement this method.")
+
+    def encode(self, x):
+        raise NotImplementedError("Subclasses should implement this method.")
+
     def forward(self, x):
-        features = self.encoder(x)  # (batch_size, embed_len, hidden_dim)
+        # print("Input x.shape:", x.shape)
+        # print(x.device)
+        processed = self.preprocess(x)
+        # print("Preprocessed x.shape:", processed.shape)
+        # print(processed.device)
+        processed_cuda = processed.to("cuda")
+        # print("After to(cuda) x.shape:", processed_cuda.shape)
+        features = self.encode(processed_cuda)  # (batch_size, embed_len, hidden_dim)
         # print("features.shape", features.shape)
         if self.enable_memory:
+            # print("Using memory module")
             out_features = self.memory(features)  # (batch_size, embed_len, hidden_dim)
+            # print("out_features.shape", out_features.shape)
         else:
             out_features = features
         # print("out_features.shape", out_features.shape)
-        transformer_out = self.transformer(out_features)  # (batch_size, embed_len, hidden_dim)
+        # print("Passing through transformer...")
+        transformer_out = self.transformer(
+            out_features
+        )  # (batch_size, embed_len, hidden_dim)
+        # print("Transformer output obtained.")
         # print("transformer_out.shape", transformer_out.shape)
         flattened_out_features = transformer_out.view(transformer_out.size(0), -1)
         # print("flattened_out_features.shape", flattened_out_features.shape)
         out = self.prediction_head(flattened_out_features)
         # print("out.shape", out.shape)
         return out
+
+
+class DINOv2wMemory(VisionEncoderWithMemory):
+    def __init__(
+        self,
+        **kwargs,
+    ):
+        super(DINOv2wMemory, self).__init__(**kwargs)
+
+        model_name = "facebook/dinov2-base"
+
+        self.processor = AutoImageProcessor.from_pretrained(model_name, use_fast=True)
+        self.encoder = AutoModel.from_pretrained(model_name)
+
+    def preprocess(self, images):
+        inputs = self.processor(images=images, return_tensors="pt", do_rescale=False)
+        return inputs["pixel_values"]  # shape: (batch_size, 3, 224, 224)
+
+    def encode(self, x):
+        features = self.encoder(pixel_values=x)  # (batch_size, embed_len, hidden_dim)
+        return features.last_hidden_state[:, 1:, :]  # Exclude CLS token
+
+
+class ViTwMemory(VisionEncoderWithMemory):
+    def __init__(
+        self,
+        model_name="vit_base_patch16_224",
+        pretrained=True,
+        **kwargs,
+    ):
+        super(ViTwMemory, self).__init__(**kwargs)
+        self.encoder = timm.create_model(
+            model_name=model_name,
+            pretrained=pretrained,
+            num_classes=0,  # No classification head
+            global_pool="",
+        )
+        self.encoder.reset_classifier(0)
+        self.processor = create_transform(
+            **resolve_data_config(self.encoder.pretrained_cfg, model=self.encoder)
+        )
+
+    def preprocess(self, images):
+        inputs = self.processor(images)
+        return inputs  # shape: (batch_size, 3, 224, 224)
+
+    def encode(self, x):
+        features = self.encoder(x)  # (batch_size, embed_len, hidden_dim)
+        return features
 
 
 if __name__ == "__main__":
@@ -129,9 +190,9 @@ if __name__ == "__main__":
             data = next(dataloader_iter)
             imgs, labels = data
 
-            imgs = nn.functional.interpolate(
-                imgs, size=(224, 224), mode="bilinear", align_corners=False
-            )
+            # imgs = nn.functional.interpolate(
+            #     imgs, size=(224, 224), mode="bilinear", align_corners=False
+            # )
             imgs = imgs.repeat(1, 3, 1, 1)  # Convert to 3 channels
 
             # print("imgs.shape", imgs.shape)
@@ -156,7 +217,9 @@ if __name__ == "__main__":
 
             wandb.log(
                 {
-                    f"train/inner_loss/{j}": model.memory.last_inner_loss if enable_memory else 0.0,
+                    f"train/inner_loss/{j}": (
+                        model.memory.last_inner_loss if enable_memory else 0.0
+                    ),
                     f"train/loss/{j}": loss_value,
                     f"train/accuracy/{j}": accuracy,
                 },
