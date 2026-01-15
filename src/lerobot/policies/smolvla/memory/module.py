@@ -7,6 +7,7 @@ from transformers.models.llama.modeling_llama import LlamaMLP, LlamaDecoderLayer
 
 import torch.nn.functional as F
 import wandb
+import os
 
 
 class Memory(LlamaMLP):
@@ -58,6 +59,7 @@ class MLPMemory(nn.Module):
             self.register_buffer(f"_saved_weights_{i}", t)
 
     def forward(self, x):
+        self.device = x.device
         B, L, D = x.shape
         if not hasattr(self, "fc0"):
             self.create_weights(batch_size=B, embed_len=L, hidden_size=D)
