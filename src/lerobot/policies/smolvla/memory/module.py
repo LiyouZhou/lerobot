@@ -333,10 +333,11 @@ if __name__ == "__main__":
 
     episode_len = 10
     hidden_size = 1024
-    batch_size = 64
+    batch_size = 16
     lr = 1e-4
-    inner_lr = 1e-3
+    inner_lr = 1e-2
     decay_factor = 0.9
+    first_order_approx = False
 
     final_linear_layer = nn.Linear(hidden_size * hidden_size, 4).to(device="cuda")
     memory = MemoryModule(
@@ -350,6 +351,7 @@ if __name__ == "__main__":
         "lr": lr,
         "inner_lr": inner_lr,
         "decay_factor": decay_factor,
+        "first_order_approx": first_order_approx,
     }
     wandb.init(project="memory-module", config=config)
 
@@ -390,6 +392,8 @@ if __name__ == "__main__":
         x = x.to(device="cuda")
         inner_losses = []
         # iterate through the steps in the episodes
+
+        loss = torch.tensor(0.0).to(device="cuda")
         for step in range(x.shape[1]):
             out = memory(x[:, step, :, :])
             inner_losses.append(memory.last_inner_loss)
@@ -397,8 +401,10 @@ if __name__ == "__main__":
             # Project y_pred into logits
             logits = final_linear_layer(y_pred)
 
+            if first_order_approx:
+                loss = torch.tensor(0.0).to(device="cuda")
             # Cross entropy loss between logits and gt
-            loss = F.cross_entropy(logits, torch.tensor(gt, device=x.device))
+            loss += F.cross_entropy(logits, torch.tensor(gt, device=x.device))
             # if not test:
             #     if step > 0:
             #         loss += F.cross_entropy(logits, torch.tensor(gt, device=x.device))
@@ -456,7 +462,13 @@ if __name__ == "__main__":
                 # if len(accuracy_window) > 300 and average_accuracy > 0.80:
                 #     test = True
 
-            # if not test:
+            if first_order_approx:
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+
+        # if not test:
+        if not first_order_approx:
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
