@@ -1,29 +1,31 @@
-from itertools import cycle
+import json
 import math
-from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata, LeRobotDataset
-from lerobot.datasets.sampler import EpisodicBatchSampler
-
-import torch
-from torch.utils.data import Dataset
-from torchvision import datasets
-from torchvision.transforms import ToTensor
-from torchvision.transforms import Resize
-import matplotlib.pyplot as plt
-import wandb
 import os
+from dataclasses import dataclass, asdict
+from itertools import cycle
+from pathlib import Path
 
-from lerobot.policies.smolvla.memory.ViTMemory import DINOv2wMemory, ViTwMemory
-from torch import nn
-from tqdm import tqdm, trange
-
-from lerobot.utils.utils import print_cuda_memory_usage
+import hydra
+import matplotlib.pyplot as plt
+import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
+import torch
 from einops import rearrange
-import numpy as np
-from pathlib import Path
-import json
+from hydra.core.config_store import ConfigStore
+from omegaconf import MISSING, OmegaConf
 from PIL import Image
+from torch import nn
+from torch.utils.data import Dataset
+from torchvision import datasets
+from torchvision.transforms import Resize, ToTensor
+from tqdm import tqdm, trange
+
+import wandb
+from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from lerobot.datasets.sampler import EpisodicBatchSampler
+from lerobot.policies.smolvla.memory.ViTMemory import DINOv2wMemory, ViTwMemory
+from lerobot.utils.utils import print_cuda_memory_usage
 
 
 def normalize(x, min_val, max_val):
@@ -34,55 +36,13 @@ def unnormalize(x, min_val, max_val):
     return x * (max_val - min_val) + min_val
 
 
-if __name__ == "__main__":
-    repo_id = "mikasa_robo_tfds_all_1.0.0_lerobot"
-    repo_root = "/home/liyouzhou/lerobot_datasets/mikasa_robo_tfds_all_1.0.0_lerobot"
-    batch_size = 32
-    lr = 0.0001
-    episode_length = 5
-    enable_memory = False
-    inner_lr = 0.01
-    chunk_size = 10
-    num_workers = 4
-    action_dim = 7
-    num_classes = action_dim * chunk_size
-
-    # ds_meta = LeRobotDatasetMetadata(repo_id, root=repo_root)
-    # action_dim = ds_meta.features["action"]['shape'][-1]
-
-    # dataset = LeRobotDataset(
-    #     repo_id=repo_id,
-    #     root=repo_root,
-    #     delta_timestamps={
-    #         "action": [i / ds_meta.fps for i in range(chunk_size)],
-    #     },
-    #     video_backend="torchcodec"
-    # )
-
-    # batch_sampler = EpisodicBatchSampler(
-    #     repo_root=repo_root,
-    #     batch_size=batch_size,
-    #     shuffle=False,
-    #     allowable_task_names=["RememberColor3-v0"],
-    # )
-
-    # dataloader = torch.utils.data.DataLoader(
-    #     dataset,
-    #     num_workers=num_workers,
-    #     batch_sampler=batch_sampler,
-    #     pin_memory=False,
-    #     persistent_workers=False
-    # )
-    # dataloader_iter = cycle(dataloader)
-
-    # ds_name = "mikasa_robo_tfds/RememberColor3-v0_baseline"
-    ds_name = "mikasa_robo_tfds/ShellGameTouch-v0"
-    data_dir = os.path.expanduser("/home/liyouzhou/tensorflow_datasets/")
-
+def prevent_tf_gpu_memory_grab():
     gpus = tf.config.list_physical_devices("GPU")
     for gpu in gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
 
+
+def load_dataset(ds_name, data_dir, action_dim):
     ds, info = tfds.load(
         ds_name, split="train", data_dir=data_dir, with_info=True, download=False
     )
@@ -104,81 +64,108 @@ if __name__ == "__main__":
         for episode in tqdm(ds, desc="Computing dataset statistics"):
             for step in episode["steps"]:
                 action = step["action"].numpy()
-                metadata["action"]["max"] = np.maximum(metadata["action"]["max"], action)
-                metadata["action"]["min"] = np.minimum(metadata["action"]["min"], action)
+                metadata["action"]["max"] = np.maximum(
+                    metadata["action"]["max"], action
+                )
+                metadata["action"]["min"] = np.minimum(
+                    metadata["action"]["min"], action
+                )
         metadata["action"]["max"] = list(metadata["action"]["max"])
         metadata["action"]["min"] = list(metadata["action"]["min"])
         print("Saving dataset statistics to disk...")
         with open(metadata_path, "w") as fd:
             json.dump(metadata, fd)
 
+    return ds, metadata
+
+
+def data_generator(ds_iter, batch_size, chunk_size):
+    while True:
+        observations = []
+        actions = []
+
+        episodes = []
+        for _ in range(batch_size):
+            episode = next(ds_iter)
+            episodes.append(episode)
+
+        for episode in episodes:
+            observations.append([])
+            actions.append([])
+            steps = episode["steps"]
+            for step in steps:
+                obs = step["observation"]
+                action = step["action"]
+                observations[-1].append(obs)
+                actions[-1].append(action)
+
+        # trim episode data
+        observations = [x[4:] for x in observations]
+        actions = [x[4:] for x in actions]
+
+        for b in range(3):
+            sample_actions = []
+            for traj in actions:
+                traj = traj[b : b + chunk_size]
+                traj_length = len(traj)
+                if traj_length < chunk_size:
+                    pad_length = chunk_size - traj_length
+                    traj += [traj[-1]] * pad_length
+                traj = traj[:chunk_size]
+                sample_actions.append([a.numpy() for a in traj])
+
+            train_sample = {
+                "observations": torch.tensor(
+                    [x[b]["image"].numpy() for x in observations]
+                ),
+                "actions": torch.tensor(sample_actions),
+                "frame_index": b,
+            }
+            yield train_sample
+
+
+@dataclass
+class TrainingConfig:
+    # Dataset and Dataloader parameters
+    ds_name: str = "mikasa_robo_tfds/ShellGameTouch-v0"
+    data_dir: str = "/home/liyouzhou/tensorflow_datasets/"
+    batch_size: int = 32
+    chunk_size: int = 10
+    action_dim: int = 7
+
+    # Model parameters
+    model_name: str = "vit_base_patch16_224"
+    enable_memory: bool = False
+    inner_lr: float = 0.01
+
+    # Training parameters
+    lr: float = 0.0001
+    n_steps: int = 10000
+
+
+cs = ConfigStore.instance()
+# Registering the Config class with the name 'config'.
+cs.store(name="config", node=TrainingConfig)
+
+
+@hydra.main(version_base=None, config_name="config")
+def main(cfg: TrainingConfig):
+    prevent_tf_gpu_memory_grab()
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+    wandb.init(project="vit-memory", config=cfg_dict)
+
+    ds, metadata = load_dataset(cfg.ds_name, cfg.data_dir, cfg.action_dim)
     print("Dataset statistics:", metadata)
 
-    ds = ds.shuffle(100).repeat().prefetch(batch_size*2)  # infinite stream
+    ds = ds.shuffle(100).repeat().prefetch(cfg.batch_size * 2)  # infinite stream
     ds_iter = iter(ds)
 
-    def data_generator():
-        while True:
-            observations = []
-            actions = []
-
-            episodes = []
-            for _ in range(batch_size):
-                episode = next(ds_iter)
-                episodes.append(episode)
-
-            for episode in episodes:
-                observations.append([])
-                actions.append([])
-                steps = episode["steps"]
-                for step in steps:
-                    obs = step["observation"]
-                    action = step["action"]
-                    observations[-1].append(obs)
-                    actions[-1].append(action)
-
-            # trim episode data
-            observations = [x[4:] for x in observations]
-            actions = [x[4:] for x in actions]
-
-            for b in range(3):
-                sample_actions = []
-                for traj in actions:
-                    traj = traj[b : b + chunk_size]
-                    traj_length = len(traj)
-                    if traj_length < chunk_size:
-                        pad_length = chunk_size - traj_length
-                        traj += [traj[-1]] * pad_length
-                    traj = traj[:chunk_size]
-                    sample_actions.append([a.numpy() for a in traj])
-                # for b in range(batch_size):
-                #     observations[b] = observations[b][4:] # Remove first few frames
-                #     actions[b] = actions[b][4:]
-                #     episode_length = len(observations[b])
-
-                #     if episode_length < chunk_size:
-                #         pad_length = chunk_size - episode_length
-                #         observations[b] += [observations[b][-1]] * pad_length
-                #         actions[b] += [actions[b][-1]] * pad_length
-
-                #     observations[b] = observations[b][:chunk_size]
-                #     actions[b] = actions[b][:chunk_size]
-
-                train_sample = {
-                    "observations": torch.tensor(
-                        [x[b]["image"].numpy() for x in observations]
-                    ),
-                    "actions": torch.tensor(
-                        sample_actions
-                    ),
-                    "frame_index": b,
-                }
-                yield train_sample
-
-    data_iter = data_generator()
+    data_iter = data_generator(ds_iter, cfg.batch_size, cfg.chunk_size)
 
     model = DINOv2wMemory(
-        enable_memory=enable_memory, num_classes=num_classes, inner_lr=inner_lr
+        enable_memory=cfg.enable_memory,
+        num_classes=cfg.action_dim * cfg.chunk_size,
+        inner_lr=cfg.inner_lr,
     )
     model.to("cuda")
     model.train()
@@ -186,30 +173,15 @@ if __name__ == "__main__":
 
     optimizer = torch.optim.Adam(
         list(model.parameters()),
-        lr=lr,
+        lr=cfg.lr,
     )
 
-    n_steps = 10000
-
     loss_window = []
-    accuracy_window = []
 
-    config = {
-        "lr": lr,
-        "batch_size": batch_size,
-        "episode_length": episode_length,
-        "model_name": "vit_base_patch16_224",
-        "enable_memory": enable_memory,
-        "inner_lr": inner_lr,
-        "num_classes": num_classes,
-    }
-    wandb.init(project="vit-memory", config=config)
-
-    main_pbar = trange(n_steps)
+    main_pbar = trange(cfg.n_steps)
     for i in main_pbar:
         os.environ["TRAINING_STEP"] = str(i)
 
-        gt = []
         # print("Fetching data...")
         data = next(data_iter)
         # print("Step done.")
@@ -220,7 +192,7 @@ if __name__ == "__main__":
         # print("episode_index", data["episode_index"])
 
         # print(data["frame_index"][0], data["frame_index"][0] == 0)
-        if enable_memory and data["frame_index"] == 0:
+        if cfg.enable_memory and data["frame_index"] == 0:
             model.memory.reset_memory()
 
         # print("data keys:", data.keys())
@@ -239,7 +211,9 @@ if __name__ == "__main__":
                     img = img.squeeze(2)
                 if img.dtype != np.uint8:
                     img = np.clip(img, 0, 255).astype(np.uint8)
-                Image.fromarray(img).save(f"image_debug/step_{i:04d}_frame_{data['frame_index']}_b{b_idx:03d}.png")
+                Image.fromarray(img).save(
+                    f"image_debug/step_{i:04d}_frame_{data['frame_index']}_b{b_idx:03d}.png"
+                )
 
         imgs = data["observations"].float().to("cuda")
 
@@ -273,7 +247,7 @@ if __name__ == "__main__":
         # print("pred.shape", pred.shape)
         # print("normalized_action.shape", normalized_action.shape)
 
-        pred = pred.view(-1, chunk_size, action_dim)
+        pred = pred.view(-1, cfg.chunk_size, cfg.action_dim)
 
         # print("Computing loss...")
         # print(pred.shape, action.shape)
@@ -328,7 +302,7 @@ if __name__ == "__main__":
                 },
                 step=i,
             )
-        
+
         for j in range(loss_per_dim.shape[1]):
             wandb.log(
                 {
@@ -363,3 +337,6 @@ if __name__ == "__main__":
         )
         main_pbar.set_postfix({f"Loss:": f"{average_loss:.4f}"})
 
+
+if __name__ == "__main__":
+    main()
