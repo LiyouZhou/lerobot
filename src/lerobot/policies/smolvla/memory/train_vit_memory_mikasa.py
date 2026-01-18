@@ -51,6 +51,10 @@ def load_dataset(ds_name, data_dir, action_dim):
         ds_name, split="train", data_dir=data_dir, with_info=True, download=False
     )
 
+    val_ds = tfds.load(
+        ds_name, split="val", data_dir=data_dir, download=False
+    )
+
     metadata = {
         "action": {
             "max": np.array([-math.inf] * action_dim),
@@ -80,7 +84,7 @@ def load_dataset(ds_name, data_dir, action_dim):
         with open(metadata_path, "w") as fd:
             json.dump(metadata, fd)
 
-    return ds, metadata
+    return ds, val_ds, metadata
 
 
 def data_generator(ds_iter, batch_size, chunk_size):
@@ -147,6 +151,7 @@ class TrainingConfig:
     n_steps: int = 10000
 
     save_steps: int = 5000
+    val_steps: int = 1000
 
 
 cs = ConfigStore.instance()
@@ -164,7 +169,7 @@ def main(cfg: TrainingConfig):
     log_dir.mkdir(parents=True, exist_ok=True)
     wandb.init(project="vit-memory", config=cfg_dict, dir=str(log_dir))
 
-    ds, metadata = load_dataset(cfg.ds_name, cfg.data_dir, cfg.action_dim)
+    ds, val_ds, metadata = load_dataset(cfg.ds_name, cfg.data_dir, cfg.action_dim)
     print("Dataset statistics:", metadata)
 
     ds = ds.shuffle(100).repeat().prefetch(cfg.batch_size * 2)  # infinite stream
@@ -347,7 +352,65 @@ def main(cfg: TrainingConfig):
         )
         main_pbar.set_postfix({f"Loss:": f"{average_loss:.4f}"})
 
-        if (i + 1) % cfg.save_steps == 0 or (i + 1) == cfg.n_steps:
+        if cfg.val_steps > 0 and ((i + 1) % cfg.val_steps == 0) or (i + 1) == cfg.n_steps:
+            val_ds_iter = iter(val_ds)
+            val_data_iter = data_generator(val_ds_iter, cfg.batch_size, cfg.chunk_size)
+
+            # Validation
+            model.eval()
+
+            val_losses = []
+            val_mses = []
+            with torch.no_grad():
+                for _ in trange(18, desc="Validation", position=1):
+                    val_data = next(val_data_iter)
+                    if cfg.enable_memory and val_data["frame_index"] == 0:
+                        model.memory.reset_memory()
+                    val_imgs = val_data["observations"].float().to("cuda")
+                    val_imgs = rearrange(val_imgs, "b h w c -> b c h w")
+                    val_action = val_data["actions"].float()
+
+                    val_pred = model(val_imgs)
+
+                    normalized_val_action = normalize(
+                        val_action,
+                        torch.tensor(metadata["action"]["min"]),
+                        torch.tensor(metadata["action"]["max"]),
+                    )
+                    normalized_val_action = normalized_val_action.to("cuda")
+
+                    val_pred = val_pred.view(-1, cfg.chunk_size, cfg.action_dim)
+
+                    val_loss = nn.L1Loss()(val_pred, normalized_val_action)
+                    unnormalized_val_pred = unnormalize(
+                        val_pred.clone().detach().cpu(),
+                        torch.tensor(metadata["action"]["min"]),
+                        torch.tensor(metadata["action"]["max"]),
+                    )
+                    val_mse = nn.MSELoss(reduction="mean")(
+                        unnormalized_val_pred, val_action
+                    )
+
+                    val_losses.append(val_loss.item())
+                    val_mses.append(val_mse.item())
+
+            average_val_loss = sum(val_losses) / len(val_losses)
+            average_val_mse = sum(val_mses) / len(val_mses)
+
+            wandb.log(
+                {
+                    "val/loss": average_val_loss,
+                    "val/mse": average_val_mse,
+                },
+                step=i,
+            )
+            print(f"Validation Loss: {average_val_loss:.4f}, MSE: {average_val_mse:.4f}")
+            model.train()
+            model.freeze_encoder()
+            if cfg.enable_memory:
+                model.memory.reset_memory()
+
+        if cfg.save_steps > 0 and ((i + 1) % cfg.save_steps == 0 or (i + 1) == cfg.n_steps):
             save_path = log_dir / f"vit_memory_mikasa_step_{i+1}.safetensors"
             save_file(model.state_dict(), save_path)
             print(f"Saved model checkpoint to {save_path}")
