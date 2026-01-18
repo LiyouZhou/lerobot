@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass, asdict
 from itertools import cycle
 from pathlib import Path
+from safetensors.torch import save_file
 
 import hydra
 import matplotlib.pyplot as plt
@@ -26,6 +27,9 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetad
 from lerobot.datasets.sampler import EpisodicBatchSampler
 from lerobot.policies.smolvla.memory.ViTMemory import DINOv2wMemory, ViTwMemory
 from lerobot.utils.utils import print_cuda_memory_usage
+from datetime import datetime
+import secrets
+import string
 
 
 def normalize(x, min_val, max_val):
@@ -142,6 +146,8 @@ class TrainingConfig:
     lr: float = 0.0001
     n_steps: int = 10000
 
+    save_steps: int = 5000
+
 
 cs = ConfigStore.instance()
 # Registering the Config class with the name 'config'.
@@ -152,7 +158,11 @@ cs.store(name="config", node=TrainingConfig)
 def main(cfg: TrainingConfig):
     prevent_tf_gpu_memory_grab()
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
-    wandb.init(project="vit-memory", config=cfg_dict)
+
+    random_suffix = ''.join(secrets.choice(string.ascii_lowercase + string.digits) for i in range(8))
+    log_dir = Path("logs") / (datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_" + random_suffix)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    wandb.init(project="vit-memory", config=cfg_dict, dir=str(log_dir))
 
     ds, metadata = load_dataset(cfg.ds_name, cfg.data_dir, cfg.action_dim)
     print("Dataset statistics:", metadata)
@@ -336,6 +346,11 @@ def main(cfg: TrainingConfig):
             step=i,
         )
         main_pbar.set_postfix({f"Loss:": f"{average_loss:.4f}"})
+
+        if (i + 1) % cfg.save_steps == 0 or (i + 1) == cfg.n_steps:
+            save_path = log_dir / f"vit_memory_mikasa_step_{i+1}.safetensors"
+            save_file(model.state_dict(), save_path)
+            print(f"Saved model checkpoint to {save_path}")
 
 
 if __name__ == "__main__":
