@@ -68,11 +68,12 @@ class VisionEncoderWithMemory(nn.Module):
         transformer_out = self.transformer(
             out_features
         )  # (batch_size, embed_len, hidden_dim)
+
         # print("Transformer output obtained.")
         # print("transformer_out.shape", transformer_out.shape)
-        flattened_out_features = transformer_out.view(transformer_out.size(0), -1)
-        # print("flattened_out_features.shape", flattened_out_features.shape)
-        out = self.prediction_head(flattened_out_features)
+        mean_out_features = transformer_out.mean(dim=1)
+        # print("mean_out_features.shape", mean_out_features.shape)
+        out = self.prediction_head(mean_out_features)
         # print("out.shape", out.shape)
         return out
 
@@ -90,12 +91,17 @@ class DINOv2wMemory(VisionEncoderWithMemory):
         self.encoder = AutoModel.from_pretrained(model_name)
 
     def preprocess(self, images):
-        inputs = self.processor(images=images, return_tensors="pt", do_rescale=False)
+        inputs = self.processor(images=images, return_tensors="pt", do_rescale=True)
         return inputs["pixel_values"]  # shape: (batch_size, 3, 224, 224)
 
     def encode(self, x):
         features = self.encoder(pixel_values=x)  # (batch_size, embed_len, hidden_dim)
         return features.last_hidden_state[:, 1:, :]  # Exclude CLS token
+
+    def freeze_encoder(self):
+        self.encoder.eval()  # important for BN / dropout
+        for p in self.encoder.parameters():
+            p.requires_grad = False
 
 
 class ViTwMemory(VisionEncoderWithMemory):
