@@ -25,19 +25,16 @@ from tqdm import tqdm, trange
 import wandb
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.datasets.sampler import EpisodicBatchSampler
-from lerobot.policies.smolvla.memory.ViTMemory import DINOv2wMemory, ViTwMemory
+from lerobot.policies.smolvla.memory.ViTMemory import (
+    DINOv2wMemory,
+    ViTwMemory,
+    normalize,
+    unnormalize,
+)
 from lerobot.utils.utils import print_cuda_memory_usage
 from datetime import datetime
 import secrets
 import string
-
-
-def normalize(x, min_val, max_val):
-    return (x - min_val) / (max_val - min_val)
-
-
-def unnormalize(x, min_val, max_val):
-    return x * (max_val - min_val) + min_val
 
 
 def prevent_tf_gpu_memory_grab():
@@ -51,9 +48,7 @@ def load_dataset(ds_name, data_dir, action_dim):
         ds_name, split="train", data_dir=data_dir, with_info=True, download=False
     )
 
-    val_ds = tfds.load(
-        ds_name, split="val", data_dir=data_dir, download=False
-    )
+    val_ds = tfds.load(ds_name, split="val", data_dir=data_dir, download=False)
 
     metadata = {
         "action": {
@@ -62,7 +57,8 @@ def load_dataset(ds_name, data_dir, action_dim):
         },
     }
 
-    metadata_path = Path(data_dir) / ds_name / "metadata.json"
+    metadata_path = Path(info.data_dir) / "metadata.json"
+    print(f"Metadata path: {metadata_path}")
 
     if metadata_path.exists():
         print("Loading dataset statistics from disk...")
@@ -80,7 +76,7 @@ def load_dataset(ds_name, data_dir, action_dim):
                 )
         metadata["action"]["max"] = list(metadata["action"]["max"])
         metadata["action"]["min"] = list(metadata["action"]["min"])
-        print("Saving dataset statistics to disk...")
+        print(f"Saving dataset statistics to disk... {metadata_path}")
         with open(metadata_path, "w") as fd:
             json.dump(metadata, fd)
 
@@ -164,8 +160,12 @@ def main(cfg: TrainingConfig):
     prevent_tf_gpu_memory_grab()
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
 
-    random_suffix = ''.join(secrets.choice(string.ascii_lowercase + string.digits) for i in range(8))
-    log_dir = Path("logs") / (datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_" + random_suffix)
+    random_suffix = "".join(
+        secrets.choice(string.ascii_lowercase + string.digits) for i in range(8)
+    )
+    log_dir = Path("logs") / (
+        datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_" + random_suffix
+    )
     log_dir.mkdir(parents=True, exist_ok=True)
     wandb.init(project="vit-memory", config=cfg_dict, dir=str(log_dir))
 
@@ -353,7 +353,11 @@ def main(cfg: TrainingConfig):
         )
         main_pbar.set_postfix({f"Loss:": f"{average_loss:.4f}"})
 
-        if cfg.val_steps > 0 and ((i + 1) % cfg.val_steps == 0) or (i + 1) == cfg.n_steps:
+        if (
+            cfg.val_steps > 0
+            and ((i + 1) % cfg.val_steps == 0)
+            or (i + 1) == cfg.n_steps
+        ):
             val_ds_iter = iter(val_ds)
             val_data_iter = data_generator(val_ds_iter, cfg.batch_size, cfg.chunk_size)
 
@@ -405,13 +409,17 @@ def main(cfg: TrainingConfig):
                 },
                 step=i,
             )
-            print(f"Validation Loss: {average_val_loss:.4f}, MSE: {average_val_mse:.4f}")
+            print(
+                f"Validation Loss: {average_val_loss:.4f}, MSE: {average_val_mse:.4f}"
+            )
             model.train()
             model.freeze_encoder()
             if cfg.enable_memory:
                 model.memory.reset_memory()
 
-        if cfg.save_steps > 0 and ((i + 1) % cfg.save_steps == 0 or (i + 1) == cfg.n_steps):
+        if cfg.save_steps > 0 and (
+            (i + 1) % cfg.save_steps == 0 or (i + 1) == cfg.n_steps
+        ):
             save_path = log_dir / f"vit_memory_mikasa_step_{i+1}.safetensors"
             save_file(model.state_dict(), save_path)
             print(f"Saved model checkpoint to {save_path}")
