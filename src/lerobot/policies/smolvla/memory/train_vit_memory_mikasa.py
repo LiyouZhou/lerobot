@@ -181,6 +181,7 @@ def main(cfg: TrainingConfig):
         enable_memory=cfg.enable_memory,
         num_classes=cfg.action_dim * cfg.chunk_size,
         inner_lr=cfg.inner_lr,
+        dataset_metadata=metadata,
     )
     model.to("cuda")
     model.train()
