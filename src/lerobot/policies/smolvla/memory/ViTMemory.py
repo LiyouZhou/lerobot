@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 from transformers import ViTImageProcessor
 from lerobot.policies.smolvla.memory.module import MemoryModule
@@ -6,6 +7,15 @@ from tqdm import trange
 from timm.data import resolve_data_config
 from timm.data.transforms_factory import create_transform
 from transformers import AutoImageProcessor, AutoModel
+from safetensors.torch import load_file
+
+
+def normalize(x, min_val, max_val):
+    return (x - min_val.to(x.device)) / (max_val.to(x.device) - min_val.to(x.device))
+
+
+def unnormalize(x, min_val, max_val):
+    return x * (max_val.to(x.device) - min_val.to(x.device)) + min_val.to(x.device)
 
 
 class VisionEncoderWithMemory(nn.Module):
@@ -16,6 +26,10 @@ class VisionEncoderWithMemory(nn.Module):
         decay_factor=0.99,
         num_classes=10,
         enable_memory=True,
+        n_action_steps=5,
+        dataset_metadata=None,
+        action_dim=7,
+        chunk_size=10,
     ):
         super(VisionEncoderWithMemory, self).__init__()
         self.enable_memory = enable_memory
@@ -40,6 +54,28 @@ class VisionEncoderWithMemory(nn.Module):
             ),
             num_layers=num_layers,
         )
+
+        # constant value
+        self.register_buffer(
+            "action_min",
+            (
+                torch.tensor(dataset_metadata["action"]["min"])
+                if dataset_metadata
+                else torch.tensor(0.0)
+            ),
+        )
+        self.register_buffer(
+            "action_max",
+            (
+                torch.tensor(dataset_metadata["action"]["max"])
+                if dataset_metadata
+                else torch.tensor(0.0)
+            ),
+        )
+
+        self.action_dim = action_dim
+        self.chunk_size = chunk_size
+        self.action_cache = []
 
     def preprocess(self, images):
         raise NotImplementedError("Subclasses should implement this method.")
@@ -76,6 +112,39 @@ class VisionEncoderWithMemory(nn.Module):
         out = self.prediction_head(mean_out_features)
         # print("out.shape", out.shape)
         return out
+
+    def reset_action_cache(self):
+        self.action_cache = []
+
+    def get_action_cache(self):
+        return self.action_cache
+
+    def select_action(self, x):
+        if self.action_cache == []:
+            pred = self.forward(x)
+            pred = pred.view(-1, self.chunk_size, self.action_dim)
+
+            if (self.action_min != 0.0).any():
+                unnormalized_pred = unnormalize(
+                    pred.clone().detach().cpu(),
+                    torch.tensor(self.action_min),
+                    torch.tensor(self.action_max),
+                )
+            else:
+                unnormalized_pred = pred.clone().detach().cpu()
+
+            for i in range(self.chunk_size):
+                self.action_cache.append(unnormalized_pred[:, i, :])
+
+        return self.action_cache.pop(0)
+
+    def load(self, checkpoint_path):
+        state_dict = load_file(checkpoint_path)
+        self.load_state_dict(state_dict)
+
+    def reset_memory(self):
+        if self.enable_memory:
+            self.memory.reset_memory()
 
 
 class DINOv2wMemory(VisionEncoderWithMemory):
