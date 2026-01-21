@@ -8,6 +8,7 @@ from timm.data import resolve_data_config
 from timm.data.transforms_factory import create_transform
 from transformers import AutoImageProcessor, AutoModel
 from safetensors.torch import load_file
+from dataclasses import dataclass, asdict
 
 
 def normalize(x, min_val, max_val):
@@ -18,35 +19,39 @@ def unnormalize(x, min_val, max_val):
     return x * (max_val.to(x.device) - min_val.to(x.device)) + min_val.to(x.device)
 
 
+@dataclass
+class ViTMemoryConfig:
+    memory_size: int = 768
+    inner_lr: float = 0.4
+    decay_factor: float = 0.99
+    enable_memory: bool = True
+    n_action_steps: int = 5
+    action_dim: int = 7
+    chunk_size: int = 10
+
+
 class VisionEncoderWithMemory(nn.Module):
     def __init__(
         self,
-        memory_size=768,
-        inner_lr=0.4,
-        decay_factor=0.99,
-        num_classes=10,
-        enable_memory=True,
-        n_action_steps=5,
+        config: ViTMemoryConfig,
         dataset_metadata=None,
-        action_dim=7,
-        chunk_size=10,
     ):
         super(VisionEncoderWithMemory, self).__init__()
-        self.enable_memory = enable_memory
+        self.cfg = config
 
-        if self.enable_memory:
+        if self.cfg.enable_memory:
             self.memory = MemoryModule(
-                hidden_size=memory_size,
-                inner_learning_rate=inner_lr,
-                decay_factor=decay_factor,
+                hidden_size=self.cfg.memory_size,
+                inner_learning_rate=self.cfg.inner_lr,
+                decay_factor=self.cfg.decay_factor,
             )
         self.prediction_head = nn.Sequential(
-            nn.LazyLinear(memory_size),
+            nn.LazyLinear(self.cfg.memory_size),
             nn.ReLU(),
-            nn.LazyLinear(num_classes),
+            nn.LazyLinear(self.cfg.chunk_size * self.cfg.action_dim),
         )
         num_layers = 1
-        hidden_dim = memory_size
+        hidden_dim = self.cfg.memory_size
         num_heads = 4
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
@@ -73,8 +78,6 @@ class VisionEncoderWithMemory(nn.Module):
             ),
         )
 
-        self.action_dim = action_dim
-        self.chunk_size = chunk_size
         self.action_cache = []
 
     def preprocess(self, images):
@@ -93,7 +96,7 @@ class VisionEncoderWithMemory(nn.Module):
         # print("After to(cuda) x.shape:", processed_cuda.shape)
         features = self.encode(processed_cuda)  # (batch_size, embed_len, hidden_dim)
         # print("features.shape", features.shape)
-        if self.enable_memory:
+        if self.cfg.enable_memory:
             # print("Using memory module")
             out_features = self.memory(features)  # (batch_size, embed_len, hidden_dim)
             # print("out_features.shape", out_features.shape)
@@ -122,7 +125,7 @@ class VisionEncoderWithMemory(nn.Module):
     def select_action(self, x):
         if self.action_cache == []:
             pred = self.forward(x)
-            pred = pred.view(-1, self.chunk_size, self.action_dim)
+            pred = pred.view(-1, self.cfg.chunk_size, self.cfg.action_dim)
 
             if (self.action_min != 0.0).any():
                 unnormalized_pred = unnormalize(
@@ -133,7 +136,7 @@ class VisionEncoderWithMemory(nn.Module):
             else:
                 unnormalized_pred = pred.clone().detach().cpu()
 
-            for i in range(self.chunk_size):
+            for i in range(self.cfg.chunk_size):
                 self.action_cache.append(unnormalized_pred[:, i, :])
 
         return self.action_cache.pop(0)
@@ -143,16 +146,17 @@ class VisionEncoderWithMemory(nn.Module):
         self.load_state_dict(state_dict)
 
     def reset_memory(self):
-        if self.enable_memory:
+        if self.cfg.enable_memory:
             self.memory.reset_memory()
 
 
 class DINOv2wMemory(VisionEncoderWithMemory):
     def __init__(
         self,
+        *args,
         **kwargs,
     ):
-        super(DINOv2wMemory, self).__init__(**kwargs)
+        super(DINOv2wMemory, self).__init__(*args, **kwargs)
 
         model_name = "facebook/dinov2-base"
 

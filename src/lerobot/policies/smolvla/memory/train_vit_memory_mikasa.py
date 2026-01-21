@@ -1,7 +1,7 @@
 import json
 import math
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from itertools import cycle
 from pathlib import Path
 from safetensors.torch import save_file
@@ -28,6 +28,7 @@ from lerobot.datasets.sampler import EpisodicBatchSampler
 from lerobot.policies.smolvla.memory.ViTMemory import (
     DINOv2wMemory,
     ViTwMemory,
+    ViTMemoryConfig,
     normalize,
     unnormalize,
 )
@@ -134,13 +135,10 @@ class TrainingConfig:
     ds_name: str = "mikasa_robo_tfds/ShellGameTouch-v0"
     data_dir: str = "/home/liyouzhou/tensorflow_datasets/"
     batch_size: int = 32
-    chunk_size: int = 10
     action_dim: int = 7
 
     # Model parameters
     model_name: str = "vit_base_patch16_224"
-    enable_memory: bool = False
-    inner_lr: float = 0.01
 
     # Training parameters
     lr: float = 0.0001
@@ -148,6 +146,8 @@ class TrainingConfig:
 
     save_steps: int = 5000
     val_steps: int = 1000
+
+    model_config: ViTMemoryConfig = field(default_factory=ViTMemoryConfig)
 
 
 cs = ConfigStore.instance()
@@ -175,12 +175,10 @@ def main(cfg: TrainingConfig):
     ds = ds.shuffle(100).repeat().prefetch(cfg.batch_size * 2)  # infinite stream
     ds_iter = iter(ds)
 
-    data_iter = data_generator(ds_iter, cfg.batch_size, cfg.chunk_size)
+    data_iter = data_generator(ds_iter, cfg.batch_size, cfg.model_config.chunk_size)
 
     model = DINOv2wMemory(
-        enable_memory=cfg.enable_memory,
-        num_classes=cfg.action_dim * cfg.chunk_size,
-        inner_lr=cfg.inner_lr,
+        cfg.model_config,
         dataset_metadata=metadata,
     )
     model.to("cuda")
@@ -208,7 +206,7 @@ def main(cfg: TrainingConfig):
         # print("episode_index", data["episode_index"])
 
         # print(data["frame_index"][0], data["frame_index"][0] == 0)
-        if cfg.enable_memory and data["frame_index"] == 0:
+        if cfg.model_config.enable_memory and data["frame_index"] == 0:
             model.memory.reset_memory()
 
         # print("data keys:", data.keys())
@@ -263,7 +261,7 @@ def main(cfg: TrainingConfig):
         # print("pred.shape", pred.shape)
         # print("normalized_action.shape", normalized_action.shape)
 
-        pred = pred.view(-1, cfg.chunk_size, cfg.action_dim)
+        pred = pred.view(-1, cfg.model_config.chunk_size, cfg.model_config.action_dim)
 
         # print("Computing loss...")
         # print(pred.shape, action.shape)
@@ -359,7 +357,9 @@ def main(cfg: TrainingConfig):
             or (i + 1) == cfg.n_steps
         ):
             val_ds_iter = iter(val_ds)
-            val_data_iter = data_generator(val_ds_iter, cfg.batch_size, cfg.chunk_size)
+            val_data_iter = data_generator(
+                val_ds_iter, cfg.batch_size, cfg.model_config.chunk_size
+            )
 
             # Validation
             model.eval()
@@ -369,7 +369,7 @@ def main(cfg: TrainingConfig):
             with torch.no_grad():
                 for _ in trange(18, desc="Validation", position=1):
                     val_data = next(val_data_iter)
-                    if cfg.enable_memory and val_data["frame_index"] == 0:
+                    if cfg.model_config.enable_memory and val_data["frame_index"] == 0:
                         model.memory.reset_memory()
                     val_imgs = val_data["observations"].float().to("cuda")
                     val_imgs = rearrange(val_imgs, "b h w c -> b c h w")
@@ -384,7 +384,9 @@ def main(cfg: TrainingConfig):
                     )
                     normalized_val_action = normalized_val_action.to("cuda")
 
-                    val_pred = val_pred.view(-1, cfg.chunk_size, cfg.action_dim)
+                    val_pred = val_pred.view(
+                        -1, cfg.model_config.chunk_size, cfg.model_config.action_dim
+                    )
 
                     val_loss = nn.L1Loss()(val_pred, normalized_val_action)
                     unnormalized_val_pred = unnormalize(
@@ -414,7 +416,7 @@ def main(cfg: TrainingConfig):
             )
             model.train()
             model.freeze_encoder()
-            if cfg.enable_memory:
+            if cfg.model_config.enable_memory:
                 model.memory.reset_memory()
 
         if cfg.save_steps > 0 and (
