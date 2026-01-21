@@ -2,24 +2,17 @@ import json
 import math
 import os
 from dataclasses import dataclass, asdict, field
-from itertools import cycle
 from pathlib import Path
 from safetensors.torch import save_file
 
-import hydra
-import matplotlib.pyplot as plt
+import draccus
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
 import torch
 from einops import rearrange
-from hydra.core.config_store import ConfigStore
-from omegaconf import MISSING, OmegaConf
 from PIL import Image
 from torch import nn
-from torch.utils.data import Dataset
-from torchvision import datasets
-from torchvision.transforms import Resize, ToTensor
 from tqdm import tqdm, trange
 
 import wandb
@@ -32,7 +25,6 @@ from lerobot.policies.smolvla.memory.ViTMemory import (
     normalize,
     unnormalize,
 )
-from lerobot.utils.utils import print_cuda_memory_usage
 from datetime import datetime
 import secrets
 import string
@@ -150,15 +142,10 @@ class TrainingConfig:
     model_config: ViTMemoryConfig = field(default_factory=ViTMemoryConfig)
 
 
-cs = ConfigStore.instance()
-# Registering the Config class with the name 'config'.
-cs.store(name="config", node=TrainingConfig)
-
-
-@hydra.main(version_base=None, config_name="config")
+@draccus.wrap()
 def main(cfg: TrainingConfig):
     prevent_tf_gpu_memory_grab()
-    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+    cfg_dict = asdict(cfg)
 
     random_suffix = "".join(
         secrets.choice(string.ascii_lowercase + string.digits) for i in range(8)
@@ -167,6 +154,9 @@ def main(cfg: TrainingConfig):
         datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_" + random_suffix
     )
     log_dir.mkdir(parents=True, exist_ok=True)
+    print("Config:", cfg_dict)
+    with open(log_dir / "config.json", "w") as fd:
+        json.dump(cfg_dict, fd, indent=4)
     wandb.init(project="vit-memory", config=cfg_dict, dir=str(log_dir))
 
     ds, val_ds, metadata = load_dataset(cfg.ds_name, cfg.data_dir, cfg.action_dim)
