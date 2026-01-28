@@ -108,20 +108,23 @@ def data_generator(ds_iter, batch_size, chunk_size):
         observations = [x[4:] for x in observations]
         actions = [x[4:] for x in actions]
 
-        for b in range(3):
+        max_length = max(len(a) for a in actions)
+        action_shape = actions[0][0].shape
+        for b in range(max_length - chunk_size + 1):
             sample_actions = []
             for traj in actions:
                 traj = traj[b : b + chunk_size]
                 traj_length = len(traj)
                 if traj_length < chunk_size:
                     pad_length = chunk_size - traj_length
-                    traj += [traj[-1]] * pad_length
-                traj = traj[:chunk_size]
-                sample_actions.append([a.numpy() for a in traj])
+                    traj += [np.zeros(action_shape)] * pad_length
+                sample_actions.append(
+                    [(a.numpy() if not isinstance(a, np.ndarray) else a) for a in traj]
+                )
 
             train_sample = {
                 "observations": torch.tensor(
-                    [x[b]["image"].numpy() for x in observations]
+                    [x[b if b < len(x) else -1]["image"].numpy() for x in observations]
                 ),
                 "actions": torch.tensor(sample_actions),
                 "frame_index": b,
@@ -264,9 +267,19 @@ def main(cfg: TrainingConfig):
         pred = pred.view(-1, cfg.model_config.chunk_size, cfg.model_config.action_dim)
 
         # print("Computing loss...")
-        # print(pred.shape, action.shape)
-        loss = nn.L1Loss()(pred, normalized_action)
-        # print(loss)
+        # If GT action is all zeros for a timestep, mask it out from the loss
+        # action: (batch, chunk_size, action_dim)
+        mask = (action.abs().sum(dim=-1) != 0).to(pred.device)  # (batch, chunk)
+        abs_err = torch.abs(pred - normalized_action)  # (batch, chunk, action_dim)
+        masked_abs_err = abs_err * mask.unsqueeze(-1).float()
+
+        num_unmasked = mask.sum() * pred.shape[-1]  # scalar tensor
+        if num_unmasked.item() > 0:
+            loss = masked_abs_err.sum() / num_unmasked
+        else:
+            # No supervised targets in this batch/step: zero loss (keep requires_grad)
+            loss = torch.tensor(0.0, device=pred.device, requires_grad=True)
+        # print(loss)[]
 
         # print(
         # torch.cuda.memory_summary(),
