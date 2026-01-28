@@ -84,7 +84,9 @@ def load_dataset(ds_name, data_dir, action_dim):
     return ds, val_ds, metadata
 
 
-def data_generator(ds_iter, batch_size, chunk_size):
+def data_generator(
+    ds_iter, batch_size, chunk_size, episode_start_index=0, episode_end_index=0
+):
     while True:
         observations = []
         actions = []
@@ -105,8 +107,14 @@ def data_generator(ds_iter, batch_size, chunk_size):
                 actions[-1].append(action)
 
         # trim episode data
-        observations = [x[4:] for x in observations]
-        actions = [x[4:] for x in actions]
+        if episode_end_index > episode_start_index:
+            observations = [
+                x[episode_start_index:episode_end_index] for x in observations
+            ]
+            actions = [x[episode_start_index:episode_end_index] for x in actions]
+        else:
+            observations = [x[episode_start_index:] for x in observations]
+            actions = [x[episode_start_index:] for x in actions]
 
         max_length = max(len(a) for a in actions)
         action_shape = actions[0][0].shape
@@ -139,6 +147,8 @@ class TrainingConfig:
     data_dir: str = "/home/liyouzhou/tensorflow_datasets/"
     batch_size: int = 32
     action_dim: int = 7
+    episode_start_index: int = 0
+    episode_end_index: int = 0  # 0 means till the end
 
     # Model parameters
     model_name: str = "vit_base_patch16_224"
@@ -184,7 +194,13 @@ def main(cfg: TrainingConfig):
     ds = ds.shuffle(100).repeat().prefetch(cfg.batch_size * 2)  # infinite stream
     ds_iter = iter(ds)
 
-    data_iter = data_generator(ds_iter, cfg.batch_size, cfg.model_config.chunk_size)
+    data_iter = data_generator(
+        ds_iter,
+        cfg.batch_size,
+        cfg.model_config.chunk_size,
+        cfg.episode_start_index,
+        cfg.episode_end_index,
+    )
 
     model = DINOv2wMemory(
         cfg.model_config,
@@ -377,7 +393,11 @@ def main(cfg: TrainingConfig):
         ):
             val_ds_iter = iter(val_ds)
             val_data_iter = data_generator(
-                val_ds_iter, cfg.batch_size, cfg.model_config.chunk_size
+                val_ds_iter,
+                cfg.batch_size,
+                cfg.model_config.chunk_size,
+                cfg.episode_start_index,
+                cfg.episode_end_index,
             )
 
             # Validation
