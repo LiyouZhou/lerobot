@@ -170,6 +170,11 @@ def main(cfg: TrainingConfig):
         datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_" + random_suffix
     )
     log_dir.mkdir(parents=True, exist_ok=True)
+    with open(log_dir / "config.yaml", "w") as fd:
+        fd.write(OmegaConf.to_yaml(cfg))
+    print("Config", cfg_dict)
+    print(f"Logging to directory: {log_dir}")
+
     wandb.init(project="vit-memory", config=cfg_dict, dir=str(log_dir))
 
     ds, val_ds, metadata = load_dataset(cfg.ds_name, cfg.data_dir, cfg.action_dim)
