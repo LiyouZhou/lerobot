@@ -149,6 +149,7 @@ class TrainingConfig:
 
     save_steps: int = 5000
     val_steps: int = 1000
+    num_val_steps: int = 100
 
     model_config: ViTMemoryConfig = field(default_factory=ViTMemoryConfig)
 
@@ -385,7 +386,7 @@ def main(cfg: TrainingConfig):
             val_losses = []
             val_mses = []
             with torch.no_grad():
-                for _ in trange(18, desc="Validation", position=1):
+                for _ in trange(cfg.num_val_steps, desc="Validation", position=1):
                     val_data = next(val_data_iter)
                     if cfg.model_config.enable_memory and val_data["frame_index"] == 0:
                         model.memory.reset_memory()
