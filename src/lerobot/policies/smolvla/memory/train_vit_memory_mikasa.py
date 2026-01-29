@@ -162,7 +162,7 @@ class TrainingConfig:
 
     save_steps: int = 5000
     val_steps: int = 1000
-    num_val_steps: int = 100
+    num_val_steps: int = 20
 
     model_config: ViTMemoryConfig = field(default_factory=ViTMemoryConfig)
 
@@ -194,6 +194,7 @@ def main(cfg: TrainingConfig):
     ds, val_ds, metadata = load_dataset(cfg.ds_name, cfg.data_dir, cfg.action_dim)
     print("Dataset statistics:", metadata)
 
+    val_ds = val_ds.shuffle(50).repeat().prefetch(cfg.batch_size * 2)  # infinite stream
     ds = ds.shuffle(100).repeat().prefetch(cfg.batch_size * 2)  # infinite stream
     ds_iter = iter(ds)
 
