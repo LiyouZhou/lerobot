@@ -107,18 +107,21 @@ def data_generator(
                 actions[-1].append(action)
 
         # trim episode data
-        if episode_end_index > episode_start_index:
-            observations = [
-                x[episode_start_index:episode_end_index] for x in observations
-            ]
-            actions = [x[episode_start_index:episode_end_index] for x in actions]
-        else:
-            observations = [x[episode_start_index:] for x in observations]
-            actions = [x[episode_start_index:] for x in actions]
+        observations = [x[episode_start_index:] for x in observations]
+        actions = [x[episode_start_index:] for x in actions]
 
         max_length = max(len(a) for a in actions)
         action_shape = actions[0][0].shape
-        for b in range(max_length - chunk_size + 1):
+
+        num_frames_in_episode = min(
+            (max_length - chunk_size + 1) if max_length >= chunk_size else max_length,
+            (
+                (episode_end_index - episode_start_index)
+                if episode_end_index > episode_start_index
+                else max_length
+            ),
+        )
+        for b in range(num_frames_in_episode):
             sample_actions = []
             for traj in actions:
                 traj = traj[b : b + chunk_size]
