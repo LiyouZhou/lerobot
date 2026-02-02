@@ -49,7 +49,14 @@ def load_dataset(ds_name, data_dir, action_dim):
         ds_name, split="train", data_dir=data_dir, with_info=True, download=False
     )
 
-    val_ds = tfds.load(ds_name, split="val", data_dir=data_dir, download=False)
+    available_splits = list(info.splits.keys())
+
+    val_ds = tfds.load(
+        ds_name,
+        split="val" if "val" in available_splits else "test",
+        data_dir=data_dir,
+        download=False,
+    )
 
     metadata = {
         "action": {
