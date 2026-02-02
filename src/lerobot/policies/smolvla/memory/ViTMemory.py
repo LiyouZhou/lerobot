@@ -70,7 +70,7 @@ class VisionEncoderWithMemory(nn.Module):
             (
                 torch.tensor(dataset_metadata["action"]["min"])
                 if dataset_metadata
-                else torch.tensor(0.0)
+                else torch.zeros(self.cfg.action_dim)
             ),
         )
         self.register_buffer(
@@ -78,7 +78,7 @@ class VisionEncoderWithMemory(nn.Module):
             (
                 torch.tensor(dataset_metadata["action"]["max"])
                 if dataset_metadata
-                else torch.tensor(0.0)
+                else torch.zeros(self.cfg.action_dim)
             ),
         )
 
