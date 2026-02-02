@@ -85,7 +85,12 @@ def load_dataset(ds_name, data_dir, action_dim):
 
 
 def data_generator(
-    ds_iter, batch_size, chunk_size, episode_start_index=0, episode_end_index=0
+    ds_iter,
+    batch_size,
+    chunk_size,
+    episode_start_index=0,
+    episode_end_index=0,
+    downsample_rate=1,
 ):
     while True:
         observations = []
@@ -106,12 +111,28 @@ def data_generator(
                 observations[-1].append(obs)
                 actions[-1].append(action)
 
+        def pad_to_chunk_size(traj, chunk_size):
+            traj_length = len(traj)
+            pad_length = max(chunk_size - traj_length, 0)
+            pad_value = np.zeros_like(traj[-1])
+            traj += [pad_value] * pad_length
+            return traj[:chunk_size]
+
+        chunked_actions = [
+            [pad_to_chunk_size(traj[i:], chunk_size) for i in range(len(traj))]
+            for traj in actions
+        ]
+
         # trim episode data
         observations = [x[episode_start_index:] for x in observations]
-        actions = [x[episode_start_index:] for x in actions]
+        chunked_actions = [x[episode_start_index:] for x in chunked_actions]
 
-        max_length = max(len(a) for a in actions)
-        action_shape = actions[0][0].shape
+        # Downsample
+        observations = [x[::downsample_rate] for x in observations]
+        chunked_actions = [x[::downsample_rate] for x in chunked_actions]
+
+        max_length = max(len(a) for a in chunked_actions)
+        action_shape = chunked_actions[0][0][0].shape
 
         num_frames_in_episode = min(
             (max_length - chunk_size + 1) if max_length >= chunk_size else max_length,
@@ -123,14 +144,13 @@ def data_generator(
         )
         for b in range(num_frames_in_episode):
             sample_actions = []
-            for traj in actions:
-                traj = traj[b : b + chunk_size]
-                traj_length = len(traj)
-                if traj_length < chunk_size:
-                    pad_length = chunk_size - traj_length
-                    traj += [np.zeros(action_shape)] * pad_length
+            for traj in chunked_actions:
+                if b >= len(traj):
+                    chunk = [np.zeros(action_shape) for _ in range(chunk_size)]
+                else:
+                    chunk = traj[b]
                 sample_actions.append(
-                    [(a.numpy() if not isinstance(a, np.ndarray) else a) for a in traj]
+                    [(a.numpy() if not isinstance(a, np.ndarray) else a) for a in chunk]
                 )
 
             train_sample = {
@@ -152,6 +172,9 @@ class TrainingConfig:
     action_dim: int = 7
     episode_start_index: int = 0
     episode_end_index: int = 0  # 0 means till the end
+    downsample_rate: int = 1
+    # action only applies after this index in each episode this is counting after trim and downsample
+    action_start_index: int = 0
 
     # Model parameters
     model_name: str = "vit_base_patch16_224"
@@ -204,6 +227,7 @@ def main(cfg: TrainingConfig):
         cfg.model_config.chunk_size,
         cfg.episode_start_index,
         cfg.episode_end_index,
+        cfg.downsample_rate,
     )
 
     model = DINOv2wMemory(
@@ -300,12 +324,11 @@ def main(cfg: TrainingConfig):
         masked_abs_err = abs_err * mask.unsqueeze(-1).float()
 
         num_unmasked = mask.sum() * pred.shape[-1]  # scalar tensor
-        if num_unmasked.item() > 0:
-            loss = masked_abs_err.sum() / num_unmasked
-        else:
+        if data["frame_index"] < cfg.action_start_index or num_unmasked.item() == 0:
             # No supervised targets in this batch/step: zero loss (keep requires_grad)
             loss = torch.tensor(0.0, device=pred.device, requires_grad=True)
-        # print(loss)[]
+        else:
+            loss = masked_abs_err.sum() / num_unmasked
 
         # print(
         # torch.cuda.memory_summary(),
@@ -402,6 +425,7 @@ def main(cfg: TrainingConfig):
                 cfg.model_config.chunk_size,
                 cfg.episode_start_index,
                 cfg.episode_end_index,
+                cfg.downsample_rate,
             )
 
             # Validation
