@@ -12,10 +12,14 @@ from dataclasses import dataclass, asdict
 
 
 def normalize(x, min_val, max_val):
+    min_val = min_val[: x.shape[-1]]
+    max_val = max_val[: x.shape[-1]]
     return (x - min_val.to(x.device)) / (max_val.to(x.device) - min_val.to(x.device))
 
 
 def unnormalize(x, min_val, max_val):
+    min_val = min_val[: x.shape[-1]]
+    max_val = max_val[: x.shape[-1]]
     return x * (max_val.to(x.device) - min_val.to(x.device)) + min_val.to(x.device)
 
 

@@ -169,7 +169,6 @@ class TrainingConfig:
     ds_name: str = "mikasa_robo_tfds/ShellGameTouch-v0"
     data_dir: str = "/home/liyouzhou/tensorflow_datasets/"
     batch_size: int = 32
-    action_dim: int = 7
     episode_start_index: int = 0
     episode_end_index: int = 0  # 0 means till the end
     downsample_rate: int = 1
@@ -214,7 +213,9 @@ def main(cfg: TrainingConfig):
 
     wandb.init(project="vit-memory", config=cfg_dict, dir=str(log_dir))
 
-    ds, val_ds, metadata = load_dataset(cfg.ds_name, cfg.data_dir, cfg.action_dim)
+    ds, val_ds, metadata = load_dataset(
+        cfg.ds_name, cfg.data_dir, cfg.model_config.action_dim
+    )
     print("Dataset statistics:", metadata)
 
     val_ds = val_ds.shuffle(50).repeat().prefetch(cfg.batch_size * 2)  # infinite stream
@@ -305,7 +306,7 @@ def main(cfg: TrainingConfig):
         # print("Step done.")
 
         normalized_action = normalize(
-            action,
+            action[:, :, : cfg.model_config.action_dim],
             torch.tensor(metadata["action"]["min"]),
             torch.tensor(metadata["action"]["max"]),
         )
@@ -338,7 +339,9 @@ def main(cfg: TrainingConfig):
             torch.tensor(metadata["action"]["min"]),
             torch.tensor(metadata["action"]["max"]),
         )
-        mse = nn.MSELoss(reduction="mean")(unnormalized_pred, action)
+        mse = nn.MSELoss(reduction="mean")(
+            unnormalized_pred, action[:, :, : cfg.model_config.action_dim]
+        )
         wandb.log(
             {
                 "train/mse": mse.item(),
@@ -441,6 +444,7 @@ def main(cfg: TrainingConfig):
                     val_imgs = val_data["observations"].float().to("cuda")
                     val_imgs = rearrange(val_imgs, "b h w c -> b c h w")
                     val_action = val_data["actions"].float()
+                    val_action = val_action[:, :, : cfg.model_config.action_dim]
 
                     val_pred = model(val_imgs)
 
