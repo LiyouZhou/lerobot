@@ -98,6 +98,7 @@ def data_generator(
     episode_start_index=0,
     episode_end_index=0,
     downsample_rate=1,
+    image_key="image",
 ):
     while True:
         observations = []
@@ -162,7 +163,10 @@ def data_generator(
 
             train_sample = {
                 "observations": torch.tensor(
-                    [x[b if b < len(x) else -1]["image"].numpy() for x in observations]
+                    [
+                        x[b if b < len(x) else -1][image_key].numpy()
+                        for x in observations
+                    ]
                 ),
                 "actions": torch.tensor(sample_actions),
                 "frame_index": b,
@@ -175,6 +179,7 @@ class TrainingConfig:
     # Dataset and Dataloader parameters
     ds_name: str = "mikasa_robo_tfds/ShellGameTouch-v0"
     data_dir: str = "/home/liyouzhou/tensorflow_datasets/"
+    image_key: str = "image"
     batch_size: int = 32
     episode_start_index: int = 0
     episode_end_index: int = 0  # 0 means till the end
@@ -236,6 +241,7 @@ def main(cfg: TrainingConfig):
         cfg.episode_start_index,
         cfg.episode_end_index,
         cfg.downsample_rate,
+        cfg.image_key,
     )
 
     model = DINOv2wMemory(
@@ -436,6 +442,7 @@ def main(cfg: TrainingConfig):
                 cfg.episode_start_index,
                 cfg.episode_end_index,
                 cfg.downsample_rate,
+                cfg.image_key,
             )
 
             # Validation
