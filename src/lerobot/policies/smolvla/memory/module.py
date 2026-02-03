@@ -231,6 +231,35 @@ class MemoryModule(nn.Module):
         else:
             raise ValueError(f"Cannot deal with memory type {type(self.current_M)}")
 
+    def retrieve(self, x: torch.Tensor) -> torch.Tensor:
+        w_q = self.w_q.to(dtype=x.dtype)
+        Q = x @ w_q.t()  # [B, L, D]
+        out_value = self.current_M(Q)  # [B, L, D]
+        return out_value
+
+    def update(self, x: torch.Tensor) -> None:
+        w_k = self.w_k.to(dtype=x.dtype)
+        w_v = self.w_v.to(dtype=x.dtype)
+
+        with torch.enable_grad():
+            K = x @ w_k.t()  # [B, L, D]
+            V = x @ w_v.t()  # [B, L, D]
+
+            # inner‐loop loss & gradient wrt current_M (first-order)
+            pred = self.current_M(K)  # [B, L, D]
+            inner_l = F.mse_loss(pred, V)
+            x_flat = rearrange(x, "b l d -> b (l d)")
+            self.current_M.update(
+                inner_l,
+                decay_factor=self.decay_factor_generator(x_flat),
+                adaptive_lr=self.lr_adaptor(x_flat),
+            )
+            # Detach adapted memory from previous step
+            # For the purpose of outter loop, the memory is a constant
+            self.current_M.detach()
+
+            self.last_inner_loss = inner_l.item()
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         B, L, D = x.shape  # step: [batch_size, embed_length, hidden_size]
