@@ -200,6 +200,8 @@ class TrainingConfig:
 
     model_config: ViTMemoryConfig = field(default_factory=ViTMemoryConfig)
 
+    image_debug: bool = False
+
 
 cs = ConfigStore.instance()
 # Registering the Config class with the name 'config'.
@@ -259,6 +261,8 @@ def main(cfg: TrainingConfig):
 
     loss_window = []
 
+    episode_loss = []
+
     main_pbar = trange(cfg.n_steps)
     for i in main_pbar:
         os.environ["TRAINING_STEP"] = str(i)
@@ -276,11 +280,23 @@ def main(cfg: TrainingConfig):
         if cfg.model_config.enable_memory and data["frame_index"] == 0:
             model.memory.reset_memory()
 
+        if data["frame_index"] == 0:
+            wandb.log(
+                {
+                    "train/episode_loss": sum(episode_loss) / len(episode_loss),
+                    "train/episode_length": len(episode_loss)
+                    if len(episode_loss) > 0
+                    else 0.0,
+                },
+                step=i,
+            )
+            episode_loss = []
+
         # print("data keys:", data.keys())
         # imgs, labels = data
 
         os.makedirs("image_debug", exist_ok=True)
-        if i < 100:
+        if cfg.image_debug and i < 100:
             obs = data["observations"]
             try:
                 obs_np = obs.numpy()
@@ -404,6 +420,7 @@ def main(cfg: TrainingConfig):
             )
 
         loss_window.append(loss_value)
+        episode_loss.append(loss_value)
         # accuracy_window.append(accuracy.item())
         window_size = 100
 
@@ -423,7 +440,7 @@ def main(cfg: TrainingConfig):
 
         wandb.log(
             {
-                f"frame/loss/{data['frame_index']}": loss_value,
+                f"frame/loss/{data['frame_index']:03d}": loss_value,
             },
             step=i,
         )
