@@ -101,8 +101,11 @@ class VisionEncoderWithMemory(nn.Module):
         features = self.encode(processed_cuda)  # (batch_size, embed_len, hidden_dim)
         # print("features.shape", features.shape)
         if self.cfg.enable_memory:
-            # print("Using memory module")
-            out_features = self.memory(features)  # (batch_size, embed_len, hidden_dim)
+            # print("retrieve memory module")
+            out_features = self.memory.retrieve(features)  
+            out_features = torch.concat([features, out_features], dim=1)
+            # print("retrieve memory module done")
+            # out_features = self.memory(features)  # (batch_size, embed_len, hidden_dim)
             # print("out_features.shape", out_features.shape)
         else:
             out_features = features
@@ -111,6 +114,9 @@ class VisionEncoderWithMemory(nn.Module):
         transformer_out = self.transformer(
             out_features
         )  # (batch_size, embed_len, hidden_dim)
+
+        if self.cfg.enable_memory:
+            self.memory.update(transformer_out)
 
         # print("Transformer output obtained.")
         # print("transformer_out.shape", transformer_out.shape)
@@ -134,8 +140,8 @@ class VisionEncoderWithMemory(nn.Module):
             if (self.action_min != 0.0).any():
                 unnormalized_pred = unnormalize(
                     pred.clone().detach().cpu(),
-                    torch.tensor(self.action_min),
-                    torch.tensor(self.action_max),
+                    self.action_min.detach().clone().cpu(),
+                    self.action_max.detach().clone().cpu(),
                 )
             else:
                 unnormalized_pred = pred.clone().detach().cpu()
@@ -231,8 +237,11 @@ if __name__ == "__main__":
     batch_size = 32
     episode_length = 5
     enable_memory = True
+    cfg = ViTMemoryConfig(
+        enable_memory=enable_memory,
+    )
 
-    model = ViTwMemory(enable_memory=enable_memory)
+    model = DINOv2wMemory(config=cfg)
     model.to("cuda")
     model.train()
     model.encoder.eval()
@@ -259,7 +268,7 @@ if __name__ == "__main__":
         "model_name": "vit_base_patch16_224",
         "enable_memory": enable_memory,
     }
-    wandb.init(project="vit-memory", config=config)
+    wandb.init(project="vit-memory-selftest", config=config)
 
     main_pbar = trange(n_steps)
     for i in main_pbar:
@@ -279,6 +288,7 @@ if __name__ == "__main__":
             imgs = imgs.repeat(1, 3, 1, 1)  # Convert to 3 channels
 
             # print("imgs.shape", imgs.shape)
+            imgs = imgs * 255.0  # Scale to [0, 255]
 
             if gt == []:
                 gt = labels
