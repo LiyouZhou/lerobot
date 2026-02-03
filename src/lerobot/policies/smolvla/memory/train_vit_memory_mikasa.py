@@ -283,10 +283,12 @@ def main(cfg: TrainingConfig):
         if data["frame_index"] == 0:
             wandb.log(
                 {
-                    "train/episode_loss": sum(episode_loss) / len(episode_loss),
-                    "train/episode_length": len(episode_loss)
-                    if len(episode_loss) > 0
-                    else 0.0,
+                    "train/episode_loss": (
+                        sum(episode_loss) / len(episode_loss)
+                        if len(episode_loss) > 0
+                        else 0.0
+                    ),
+                    "train/episode_length": len(episode_loss),
                 },
                 step=i,
             )
