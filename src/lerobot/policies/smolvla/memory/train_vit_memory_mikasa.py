@@ -188,7 +188,7 @@ class TrainingConfig:
     action_start_index: int = 0
 
     # Model parameters
-    model_name: str = "vit_base_patch16_224"
+    model_name: str = "dino_v2-base"
 
     # Training parameters
     lr: float = 0.0001
