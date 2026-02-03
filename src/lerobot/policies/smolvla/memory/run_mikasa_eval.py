@@ -464,13 +464,6 @@ def eval_mikasa(
                     # reload the safetensors weights to fill the memory initialisation values
                     model.load(cfg.pretrained_checkpoint)
 
-                    metadata_fn = "/home/liyouzhou/tensorflow_datasets/mikasa_robo_tfds/ShellGameTouch-v0/metadata.json"
-
-                    with open(metadata_fn, "r") as fd:
-                        metadata = json.load(fd)
-                    model.action_max = torch.Tensor(metadata["action"]["max"]).to("cuda")
-                    model.action_min = torch.Tensor(metadata["action"]["min"]).to("cuda")
-
                     # reset the memory again
                     model.reset_memory()
                     model.reset_action_cache()
