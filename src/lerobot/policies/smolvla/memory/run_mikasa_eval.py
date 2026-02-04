@@ -43,7 +43,7 @@ from torchvision.io import write_video
 def save_rollout_video(rollout_images, idx, success, task_description, log_file=None):
     """Saves an MP4 replay of an episode."""
     rollout_dir = f"./rollouts/{DATE}"
-    os.makedirs(rollout_dir, exist_ok=True)
+    rollout_dir = f"./rollouts/{DATE_TIME}"
     processed_task_description = (
         task_description.lower()
         .replace(" ", "_")
@@ -425,41 +425,29 @@ def eval_mikasa(
             model.reset_memory()
             model.reset_action_cache()
             while t < max_steps + cfg.num_steps_wait:
-                # try:
-                # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
-                # and we need to wait for them to fall
-                if t < cfg.num_steps_wait:
-                    action = env.action_space.sample()
-                    action = np.zeros(action.shape)
-                    obs, reward, terminated, truncated, info = env.step(action)
-                    images = obs["sensor_data"]["base_camera"]["rgb"]
-                    for i in range(num_envs):
-                        replay_images[i].append(images[i].detach().clone())
-                    
-                    if t == 5:
-                        actions = infer_batch(
-                            images=images,
-                            prompts=prompts,
-                            model=model
-                        )
-                        model.reset_action_cache()
-                    t += 1
-                    continue
-
                 # Get observation image
                 images = obs["sensor_data"]["base_camera"]["rgb"]
 
                 # Save preprocessed image for replay video
                 for i in range(num_envs):
+                    # Add timestep text to top right of image
+                    img_pil = Image.fromarray(images[i].cpu().numpy())
+                    draw = ImageDraw.Draw(img_pil)
+                    # Use default font
+                    font = ImageFont.load_default()
+                    text = f"t={t}"
+                    # Get text bounding box for positioning
+                    bbox = draw.textbbox((0, 0), text, font=font)
+                    text_width = bbox[2] - bbox[0]
+                    # Position at top right with small margin
+                    position = (img_pil.width - text_width - 10, 10)
+                    draw.text(position, text, fill="white", font=font)
+                    images[i] = torch.from_numpy(np.array(img_pil)).to(images[i].device)
                     replay_images[i].append(images[i].detach().clone())
 
                 if model_is_newly_loaded:
                     # run a inference to force initialisation of the memories
-                    actions = infer_batch(
-                        images=images,
-                        prompts=prompts,
-                        model=model
-                    )
+                    infer_batch(images=images, prompts=prompts, model=model)
 
                     # reload the safetensors weights to fill the memory initialisation values
                     model.load(cfg.pretrained_checkpoint)
@@ -469,14 +457,26 @@ def eval_mikasa(
                     model.reset_action_cache()
                     model_is_newly_loaded = False
 
-                # query VLA model for action
-                actions = infer_batch(
-                    images=images,
-                    prompts=prompts,
-                    model=model,
-                )
-                actions = torch.from_numpy(actions)
-                actions = actions * cfg.model_action_scale
+                if t < cfg.num_steps_wait:
+                    actions = env.action_space.sample()
+                    actions = np.zeros(actions.shape)
+                    if t == 4:
+                        infer_batch(
+                            images=images,
+                            prompts=prompts,
+                            model=model,
+                        )
+                        model.reset_action_cache()
+                else:
+                    # query VLA model for action
+                    actions = infer_batch(
+                        images=images,
+                        prompts=prompts,
+                        model=model,
+                    )
+                    actions = torch.from_numpy(actions)
+                    actions = actions * cfg.model_action_scale
+
                 obs, reward, terminated, truncated, info = env.step(actions)
 
                 for i in range(num_envs):
