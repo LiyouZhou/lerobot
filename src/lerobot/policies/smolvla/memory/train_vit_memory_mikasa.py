@@ -316,7 +316,6 @@ def main(cfg: TrainingConfig):
 
         imgs = data["observations"].float().to("cuda")
 
-        imgs = rearrange(imgs, "b h w c -> b c h w")
         action = data["actions"].float()
 
         # print("imgs min/max", imgs.min().item(), imgs.max().item())
@@ -475,7 +474,6 @@ def main(cfg: TrainingConfig):
                     if cfg.model_config.enable_memory and val_data["frame_index"] == 0:
                         model.memory.reset_memory()
                     val_imgs = val_data["observations"].float().to("cuda")
-                    val_imgs = rearrange(val_imgs, "b h w c -> b c h w")
                     val_action = val_data["actions"].float()
                     val_action = val_action[:, :, : cfg.model_config.action_dim]
 
