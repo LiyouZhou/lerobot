@@ -32,6 +32,13 @@ class ViTMemoryConfig:
     n_action_steps: int = 5
     action_dim: int = 7
     chunk_size: int = 10
+    vision_token_range: tuple[int, int] = (
+        0,
+        -1,
+    )  # [start, end) indices for selecting tokens from the vision encoder output
+    vision_token_pooling_method: str | None = (
+        None  # "mean", "max", or None (no pooling, use all tokens)
+    )
 
 
 class VisionEncoderWithMemory(nn.Module):
@@ -94,6 +101,16 @@ class VisionEncoderWithMemory(nn.Module):
         # print("Input x.shape:", x.shape)
         # print(x.device)
         processed = self.preprocess(x)
+        processed = (
+            processed[self.cfg.vision_token_range[0] : self.cfg.vision_token_range[1]]
+            if self.cfg.vision_token_range
+            else processed
+        )
+        if self.cfg.vision_token_pooling_method == "mean":
+            processed = processed.mean(dim=1, keepdim=True)
+        elif self.cfg.vision_token_pooling_method == "max":
+            processed, _ = processed.max(dim=1, keepdim=True)
+
         # print("Preprocessed x.shape:", processed.shape)
         # print(processed.device)
         processed_cuda = processed.to("cuda")
@@ -179,7 +196,7 @@ class DINOv2wMemory(VisionEncoderWithMemory):
 
     def encode(self, x):
         features = self.encoder(pixel_values=x)  # (batch_size, embed_len, hidden_dim)
-        return features.last_hidden_state[:, 1:, :]  # Exclude CLS token
+        return features.last_hidden_state
 
     def freeze_encoder(self):
         self.encoder.eval()  # important for BN / dropout
