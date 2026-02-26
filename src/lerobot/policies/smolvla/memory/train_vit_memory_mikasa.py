@@ -19,6 +19,7 @@ from PIL import Image
 from torch import nn
 from torch.utils.data import Dataset
 from torchvision import datasets
+from torchvision import transforms as T
 from torchvision.transforms import Resize, ToTensor
 from tqdm import tqdm, trange
 
@@ -201,6 +202,7 @@ class TrainingConfig:
     model_config: ViTMemoryConfig = field(default_factory=ViTMemoryConfig)
 
     image_debug: bool = False
+    image_augmentation: bool = False
 
 
 cs = ConfigStore.instance()
@@ -253,7 +255,7 @@ def main(cfg: TrainingConfig):
     model.to("cuda")
     model.train()
     model.freeze_encoder()
-    transform = T.RandomResizedCrop(size=128)
+    transform = T.RandomResizedCrop(size=128, scale=(0.8, 1.0), ratio=(1, 1))
 
     optimizer = torch.optim.Adam(
         list(model.parameters()),
@@ -316,8 +318,10 @@ def main(cfg: TrainingConfig):
                 )
 
         imgs = data["observations"].float().to("cuda")
-        imgs = rearrange(imgs, "b h w c -> b c h w")
-        imgs = torch.stack([transform(img) for img in imgs])
+
+        if cfg.image_augmentation:
+            imgs = rearrange(imgs, "b h w c -> b c h w")
+            imgs = torch.stack([transform(img) for img in imgs])
 
         action = data["actions"].float()
 
@@ -333,7 +337,6 @@ def main(cfg: TrainingConfig):
         # )
 
         # print("imgs.shape", imgs.shape)
-
         # print("Forward pass...")
         pred = model(imgs)
         # print("Step done.")
