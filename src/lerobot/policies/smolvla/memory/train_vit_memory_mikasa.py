@@ -253,6 +253,7 @@ def main(cfg: TrainingConfig):
     model.to("cuda")
     model.train()
     model.freeze_encoder()
+    transform = T.RandomResizedCrop(size=128)
 
     optimizer = torch.optim.Adam(
         list(model.parameters()),
@@ -315,6 +316,8 @@ def main(cfg: TrainingConfig):
                 )
 
         imgs = data["observations"].float().to("cuda")
+        imgs = rearrange(imgs, "b h w c -> b c h w")
+        imgs = torch.stack([transform(img) for img in imgs])
 
         action = data["actions"].float()
 
