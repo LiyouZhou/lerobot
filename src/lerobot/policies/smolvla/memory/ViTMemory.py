@@ -34,7 +34,7 @@ class ViTMemoryConfig:
     chunk_size: int = 10
     vision_token_range: tuple[int, int] = (
         0,
-        -1,
+        10000000,
     )  # [start, end) indices for selecting tokens from the vision encoder output
     vision_token_pooling_method: str | None = (
         None  # "mean", "max", or None (no pooling, use all tokens)
@@ -101,25 +101,27 @@ class VisionEncoderWithMemory(nn.Module):
         # print("Input x.shape:", x.shape)
         # print(x.device)
         processed = self.preprocess(x)
-        processed = (
-            processed[self.cfg.vision_token_range[0] : self.cfg.vision_token_range[1]]
-            if self.cfg.vision_token_range
-            else processed
-        )
-        if self.cfg.vision_token_pooling_method == "mean":
-            processed = processed.mean(dim=1, keepdim=True)
-        elif self.cfg.vision_token_pooling_method == "max":
-            processed, _ = processed.max(dim=1, keepdim=True)
 
         # print("Preprocessed x.shape:", processed.shape)
         # print(processed.device)
         processed_cuda = processed.to("cuda")
         # print("After to(cuda) x.shape:", processed_cuda.shape)
         features = self.encode(processed_cuda)  # (batch_size, embed_len, hidden_dim)
+
+        features = (
+            features[self.cfg.vision_token_range[0] : self.cfg.vision_token_range[1]]
+            if self.cfg.vision_token_range
+            else features
+        )
+        if self.cfg.vision_token_pooling_method == "mean":
+            features = features.mean(dim=1, keepdim=True)
+        elif self.cfg.vision_token_pooling_method == "max":
+            features, _ = features.max(dim=1, keepdim=True)
+
         # print("features.shape", features.shape)
         if self.cfg.enable_memory:
             # print("retrieve memory module")
-            out_features = self.memory.retrieve(features)  
+            out_features = self.memory.retrieve(features)
             out_features = torch.concat([features, out_features], dim=1)
             # print("retrieve memory module done")
             # out_features = self.memory(features)  # (batch_size, embed_len, hidden_dim)
@@ -137,6 +139,7 @@ class VisionEncoderWithMemory(nn.Module):
 
         # print("Transformer output obtained.")
         # print("transformer_out.shape", transformer_out.shape)
+        # mean pooling transformer output
         mean_out_features = transformer_out.mean(dim=1)
         # print("mean_out_features.shape", mean_out_features.shape)
         out = self.prediction_head(mean_out_features)
