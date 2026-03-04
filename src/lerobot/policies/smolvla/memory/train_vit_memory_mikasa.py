@@ -274,7 +274,9 @@ def main(cfg: TrainingConfig):
         data = next(data_iter)
 
         # reset memory at the start of each episode
-        model.memory.reset_memory()
+        if cfg.model_config.enable_memory:
+            model.memory.reset_memory()
+
         loss = torch.tensor(0.0, device="cuda")
         episode_loss = []
         mse_values = []
@@ -313,7 +315,9 @@ def main(cfg: TrainingConfig):
             )
             normalized_action = normalized_action.to("cuda")
 
-            pred = pred.view(-1, cfg.model_config.chunk_size, cfg.model_config.action_dim)
+            pred = pred.view(
+                -1, cfg.model_config.chunk_size, cfg.model_config.action_dim
+            )
 
             # If GT action is all zeros for a timestep, mask it out from the loss
             # action: (batch, chunk_size, action_dim)
@@ -322,7 +326,10 @@ def main(cfg: TrainingConfig):
             masked_abs_err = abs_err * mask.unsqueeze(-1).float()
 
             num_unmasked = mask.sum() * pred.shape[-1]  # scalar tensor
-            if data[frame_idx]["frame_index"] < cfg.action_start_index or num_unmasked.item() == 0:
+            if (
+                data[frame_idx]["frame_index"] < cfg.action_start_index
+                or num_unmasked.item() == 0
+            ):
                 # No supervised targets in this batch/step: zero loss (keep requires_grad)
                 loss += torch.tensor(0.0, device=pred.device)
             else:
@@ -346,18 +353,30 @@ def main(cfg: TrainingConfig):
 
         loss_value = loss.item()
         # average over episode and batch
-        mean_loss_per_dim = torch.stack(loss_per_dim_values).mean(dim=0).mean(dim=0)  # (chunk_size, action_dim)
+        mean_loss_per_dim = (
+            torch.stack(loss_per_dim_values).mean(dim=0).mean(dim=0)
+        )  # (chunk_size, action_dim)
         wandb.log(
             {
                 "train/loss": loss_value,
-                f"train/mse": sum(mse_values) / len(mse_values) if len(mse_values) > 0 else 0.0,
+                f"train/mse": (
+                    sum(mse_values) / len(mse_values) if len(mse_values) > 0 else 0.0
+                ),
                 "train/episode_loss": (
-                    sum(episode_loss) / len(episode_loss) if len(episode_loss) > 0 else 0.0
+                    sum(episode_loss) / len(episode_loss)
+                    if len(episode_loss) > 0
+                    else 0.0
                 ),
                 "train/episode_length": len(episode_loss),
-                **{f"loss/action_dim{j}": mean_loss_per_dim[:, j].mean().item() for j in range(mean_loss_per_dim.shape[1])},
-                **{f"loss/action_step{j}": mean_loss_per_dim[j, :].mean().item() for j in range(mean_loss_per_dim.shape[0])},
-                **{f"frame/loss/{j:03}": l for j, l in enumerate(episode_loss)}
+                **{
+                    f"loss/action_dim{j}": mean_loss_per_dim[:, j].mean().item()
+                    for j in range(mean_loss_per_dim.shape[1])
+                },
+                **{
+                    f"loss/action_step{j}": mean_loss_per_dim[j, :].mean().item()
+                    for j in range(mean_loss_per_dim.shape[0])
+                },
+                **{f"frame/loss/{j:03}": l for j, l in enumerate(episode_loss)},
             },
             step=i,
         )
@@ -394,10 +413,13 @@ def main(cfg: TrainingConfig):
                     # sample a batch of episodes
                     val_data = next(val_data_iter)
 
-                    model.memory.reset_memory()
+                    if cfg.model_config.enable_memory:
+                        model.memory.reset_memory()
 
                     for frame_idx in range(len(val_data)):
-                        val_imgs = val_data[frame_idx]["observations"].float().to("cuda")
+                        val_imgs = (
+                            val_data[frame_idx]["observations"].float().to("cuda")
+                        )
                         val_action = val_data[frame_idx]["actions"].float()
                         val_action = val_action[:, :, : cfg.model_config.action_dim]
 
