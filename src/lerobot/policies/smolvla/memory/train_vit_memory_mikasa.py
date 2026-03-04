@@ -151,6 +151,7 @@ def data_generator(
                 else max_length
             ),
         )
+        train_episode = []
         for b in range(num_frames_in_episode):
             sample_actions = []
             for traj in chunked_actions:
@@ -172,7 +173,9 @@ def data_generator(
                 "actions": torch.tensor(sample_actions),
                 "frame_index": b,
             }
-            yield train_sample
+            train_episode.append(train_sample)
+
+        yield train_episode
 
 
 @dataclass
@@ -263,194 +266,106 @@ def main(cfg: TrainingConfig):
     )
 
     loss_window = []
-
-    episode_loss = []
-
     main_pbar = trange(cfg.n_steps)
     for i in main_pbar:
         os.environ["TRAINING_STEP"] = str(i)
 
-        # print("Fetching data...")
+        # sample an batch of episodes
         data = next(data_iter)
-        # print("Step done.")
 
-        # print("frame_index", data["frame_index"])
-        # print(data["actions"].mean())
-        # print(data["observations"].float().mean())
-        # print("episode_index", data["episode_index"])
+        # reset memory at the start of each episode
+        model.memory.reset_memory()
+        loss = torch.tensor(0.0, device="cuda")
+        episode_loss = []
+        mse_values = []
+        loss_per_dim_values = []
+        for frame_idx in range(len(data)):
+            if cfg.image_debug and i < 100:
+                os.makedirs("image_debug", exist_ok=True)
+                obs = data[frame_idx]["observations"]
+                try:
+                    obs_np = obs.numpy()
+                except Exception:
+                    obs_np = obs.cpu().numpy()
+                for b_idx in range(obs_np.shape[0]):
+                    img = obs_np[b_idx]
+                    if img.ndim == 3 and img.shape[2] == 1:
+                        img = img.squeeze(2)
+                    if img.dtype != np.uint8:
+                        img = np.clip(img, 0, 255).astype(np.uint8)
+                    Image.fromarray(img).save(
+                        f"image_debug/step_{i:04d}_frame_{data[frame_idx]['frame_index']}_b{b_idx:03d}.png"
+                    )
 
-        # print(data["frame_index"][0], data["frame_index"][0] == 0)
-        if cfg.model_config.enable_memory and data["frame_index"] == 0:
-            model.memory.reset_memory()
+            imgs = data[frame_idx]["observations"].float().to("cuda")
+            action = data[frame_idx]["actions"].float()
 
-        if data["frame_index"] == 0:
-            wandb.log(
-                {
-                    "train/episode_loss": (
-                        sum(episode_loss) / len(episode_loss)
-                        if len(episode_loss) > 0
-                        else 0.0
-                    ),
-                    "train/episode_length": len(episode_loss),
-                },
-                step=i,
+            if cfg.image_augmentation:
+                imgs = rearrange(imgs, "b h w c -> b c h w")
+                imgs = torch.stack([transform(img) for img in imgs])
+
+            pred = model(imgs)
+
+            normalized_action = normalize(
+                action[:, :, : cfg.model_config.action_dim],
+                torch.tensor(metadata["action"]["min"]),
+                torch.tensor(metadata["action"]["max"]),
             )
-            episode_loss = []
+            normalized_action = normalized_action.to("cuda")
 
-        # print("data keys:", data.keys())
-        # imgs, labels = data
+            pred = pred.view(-1, cfg.model_config.chunk_size, cfg.model_config.action_dim)
 
-        os.makedirs("image_debug", exist_ok=True)
-        if cfg.image_debug and i < 100:
-            obs = data["observations"]
-            try:
-                obs_np = obs.numpy()
-            except Exception:
-                obs_np = obs.cpu().numpy()
-            for b_idx in range(obs_np.shape[0]):
-                img = obs_np[b_idx]
-                if img.ndim == 3 and img.shape[2] == 1:
-                    img = img.squeeze(2)
-                if img.dtype != np.uint8:
-                    img = np.clip(img, 0, 255).astype(np.uint8)
-                Image.fromarray(img).save(
-                    f"image_debug/step_{i:04d}_frame_{data['frame_index']}_b{b_idx:03d}.png"
-                )
+            # If GT action is all zeros for a timestep, mask it out from the loss
+            # action: (batch, chunk_size, action_dim)
+            mask = (action.abs().sum(dim=-1) != 0).to(pred.device)  # (batch, chunk)
+            abs_err = torch.abs(pred - normalized_action)  # (batch, chunk, action_dim)
+            masked_abs_err = abs_err * mask.unsqueeze(-1).float()
 
-        imgs = data["observations"].float().to("cuda")
+            num_unmasked = mask.sum() * pred.shape[-1]  # scalar tensor
+            if data[frame_idx]["frame_index"] < cfg.action_start_index or num_unmasked.item() == 0:
+                # No supervised targets in this batch/step: zero loss (keep requires_grad)
+                loss += torch.tensor(0.0, device=pred.device)
+            else:
+                loss += masked_abs_err.sum() / num_unmasked
 
-        if cfg.image_augmentation:
-            imgs = rearrange(imgs, "b h w c -> b c h w")
-            imgs = torch.stack([transform(img) for img in imgs])
+            unnormalized_pred = unnormalize(
+                pred.clone().detach().cpu(),
+                torch.tensor(metadata["action"]["min"]),
+                torch.tensor(metadata["action"]["max"]),
+            )
+            mse = nn.MSELoss(reduction="mean")(
+                unnormalized_pred, action[:, :, : cfg.model_config.action_dim]
+            )
+            mse_values.append(mse.item())
+            loss_per_dim_values.append(abs(normalized_action - pred.detach()))
+            episode_loss.append(loss.item())
 
-        action = data["actions"].float()
-
-        # print("imgs min/max", imgs.min().item(), imgs.max().item())
-
-        # print(imgs.shape)
-        # print(action.shape)
-        # print(imgs.device)
-        # print(imgs.type)
-
-        # imgs = nn.functional.interpolate(
-        #     imgs, size=(224, 224), mode="bilinear", align_corners=False
-        # )
-
-        # print("imgs.shape", imgs.shape)
-        # print("Forward pass...")
-        pred = model(imgs)
-        # print("Step done.")
-
-        normalized_action = normalize(
-            action[:, :, : cfg.model_config.action_dim],
-            torch.tensor(metadata["action"]["min"]),
-            torch.tensor(metadata["action"]["max"]),
-        )
-        normalized_action = normalized_action.to("cuda")
-
-        # print("pred.shape", pred.shape)
-        # print("normalized_action.shape", normalized_action.shape)
-
-        pred = pred.view(-1, cfg.model_config.chunk_size, cfg.model_config.action_dim)
-
-        # print("Computing loss...")
-        # If GT action is all zeros for a timestep, mask it out from the loss
-        # action: (batch, chunk_size, action_dim)
-        mask = (action.abs().sum(dim=-1) != 0).to(pred.device)  # (batch, chunk)
-        abs_err = torch.abs(pred - normalized_action)  # (batch, chunk, action_dim)
-        masked_abs_err = abs_err * mask.unsqueeze(-1).float()
-
-        num_unmasked = mask.sum() * pred.shape[-1]  # scalar tensor
-        if data["frame_index"] < cfg.action_start_index or num_unmasked.item() == 0:
-            # No supervised targets in this batch/step: zero loss (keep requires_grad)
-            loss = torch.tensor(0.0, device=pred.device, requires_grad=True)
-        else:
-            loss = masked_abs_err.sum() / num_unmasked
-
-        # print(
-        # torch.cuda.memory_summary(),
-        # torch.cuda.max_memory_allocated())
-        unnormalized_pred = unnormalize(
-            pred.clone().detach().cpu(),
-            torch.tensor(metadata["action"]["min"]),
-            torch.tensor(metadata["action"]["max"]),
-        )
-        mse = nn.MSELoss(reduction="mean")(
-            unnormalized_pred, action[:, :, : cfg.model_config.action_dim]
-        )
-        wandb.log(
-            {
-                "train/mse": mse.item(),
-            },
-            step=i,
-        )
-        # for name, p in model.named_parameters():
-        #     print(f"{name:60s} {tuple(p.shape)!s:20s} {p.numel()/1e6:8.2f}M")
-
-        # for action_i, action_val in enumerate(action):
-        #     wandb.log(
-        #         {
-        #             f"train/sample_action/{action_i}": action_val.mean().item(),
-        #         },
-        #         step=i,
-        #     )
-
-        # print("Backward pass...")
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
-        # print("Step done.")
 
-        # print("pred", pred.argmax(dim=1))
-        # print("labels", labels)
-        # print("gt", gt)
-
-        # accuracy = (pred.argmax(dim=1) == gt.to("cuda")).float().mean()
         loss_value = loss.item()
-
-        loss_per_dim = abs(normalized_action - pred.detach())
-
-        for j in range(loss_per_dim.shape[2]):
-            wandb.log(
-                {
-                    f"loss/action_dim{j}": loss_per_dim[:, :, j].mean().item(),
-                },
-                step=i,
-            )
-
-        for j in range(loss_per_dim.shape[1]):
-            wandb.log(
-                {
-                    f"loss/action_step{j}": loss_per_dim[:, j, :].mean().item(),
-                },
-                step=i,
-            )
-
-        loss_window.append(loss_value)
-        episode_loss.append(loss_value)
-        # accuracy_window.append(accuracy.item())
-        window_size = 100
-
-        average_loss = sum(loss_window[-window_size:]) / len(loss_window[-window_size:])
-        # average_accuracy = sum(accuracy_window[-window_size:]) / len(
-        #     accuracy_window[-window_size:]
-        # )
-        loss_window = loss_window[-window_size:]
-        # accuracy_window = accuracy_window[-window_size:]
-
+        # average over episode and batch
+        mean_loss_per_dim = torch.stack(loss_per_dim_values).mean(dim=0).mean(dim=0)  # (chunk_size, action_dim)
         wandb.log(
             {
                 "train/loss": loss_value,
+                f"train/mse": sum(mse_values) / len(mse_values) if len(mse_values) > 0 else 0.0,
+                "train/episode_loss": (
+                    sum(episode_loss) / len(episode_loss) if len(episode_loss) > 0 else 0.0
+                ),
+                "train/episode_length": len(episode_loss),
+                **{f"loss/action_dim{j}": mean_loss_per_dim[:, j].mean().item() for j in range(mean_loss_per_dim.shape[1])},
+                **{f"loss/action_step{j}": mean_loss_per_dim[j, :].mean().item() for j in range(mean_loss_per_dim.shape[0])},
+                **{f"frame/loss/{j:03}": l for j, l in enumerate(episode_loss)}
             },
             step=i,
         )
 
-        wandb.log(
-            {
-                f"frame/loss/{data['frame_index']:03d}": loss_value,
-            },
-            step=i,
-        )
+        window_size = 100
+        loss_window.append(loss_value)
+        average_loss = sum(loss_window[-window_size:]) / len(loss_window[-window_size:])
+        loss_window = loss_window[-window_size:]
         main_pbar.set_postfix({f"Loss:": f"{average_loss:.4f}"})
 
         if (
@@ -476,38 +391,41 @@ def main(cfg: TrainingConfig):
             val_mses = []
             with torch.no_grad():
                 for _ in trange(cfg.num_val_steps, desc="Validation", position=1):
+                    # sample a batch of episodes
                     val_data = next(val_data_iter)
-                    if cfg.model_config.enable_memory and val_data["frame_index"] == 0:
-                        model.memory.reset_memory()
-                    val_imgs = val_data["observations"].float().to("cuda")
-                    val_action = val_data["actions"].float()
-                    val_action = val_action[:, :, : cfg.model_config.action_dim]
 
-                    val_pred = model(val_imgs)
+                    model.memory.reset_memory()
 
-                    normalized_val_action = normalize(
-                        val_action,
-                        torch.tensor(metadata["action"]["min"]),
-                        torch.tensor(metadata["action"]["max"]),
-                    )
-                    normalized_val_action = normalized_val_action.to("cuda")
+                    for frame_idx in range(len(val_data)):
+                        val_imgs = val_data[frame_idx]["observations"].float().to("cuda")
+                        val_action = val_data[frame_idx]["actions"].float()
+                        val_action = val_action[:, :, : cfg.model_config.action_dim]
 
-                    val_pred = val_pred.view(
-                        -1, cfg.model_config.chunk_size, cfg.model_config.action_dim
-                    )
+                        val_pred = model(val_imgs)
 
-                    val_loss = nn.L1Loss()(val_pred, normalized_val_action)
-                    unnormalized_val_pred = unnormalize(
-                        val_pred.clone().detach().cpu(),
-                        torch.tensor(metadata["action"]["min"]),
-                        torch.tensor(metadata["action"]["max"]),
-                    )
-                    val_mse = nn.MSELoss(reduction="mean")(
-                        unnormalized_val_pred, val_action
-                    )
+                        normalized_val_action = normalize(
+                            val_action,
+                            torch.tensor(metadata["action"]["min"]),
+                            torch.tensor(metadata["action"]["max"]),
+                        )
+                        normalized_val_action = normalized_val_action.to("cuda")
 
-                    val_losses.append(val_loss.item())
-                    val_mses.append(val_mse.item())
+                        val_pred = val_pred.view(
+                            -1, cfg.model_config.chunk_size, cfg.model_config.action_dim
+                        )
+
+                        val_loss = nn.L1Loss()(val_pred, normalized_val_action)
+                        unnormalized_val_pred = unnormalize(
+                            val_pred.clone().detach().cpu(),
+                            torch.tensor(metadata["action"]["min"]),
+                            torch.tensor(metadata["action"]["max"]),
+                        )
+                        val_mse = nn.MSELoss(reduction="mean")(
+                            unnormalized_val_pred, val_action
+                        )
+
+                        val_losses.append(val_loss.item())
+                        val_mses.append(val_mse.item())
 
             average_val_loss = sum(val_losses) / len(val_losses)
             average_val_mse = sum(val_mses) / len(val_mses)
