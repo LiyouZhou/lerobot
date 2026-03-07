@@ -39,6 +39,105 @@ class ViTMemoryConfig:
     vision_token_pooling_method: str | None = (
         None  # "mean", "max", or None (no pooling, use all tokens)
     )
+    num_layers: int = 1
+
+class MultiLayerDecoderWithMemory(nn.Module):
+    def __init__(
+        self,
+        config: ViTMemoryConfig,
+        dataset_metadata=None,
+    ):
+        super(MultiLayerDecoderWithMemory, self).__init__()
+        self.cfg = config
+
+        for i in range(self.cfg.num_layers):
+            layer = DecoderWithMemory(config)
+            setattr(self, f"layer_{i}", layer)
+
+        self.prediction_head = nn.Sequential(
+            nn.LazyLinear(self.cfg.memory_size),
+            nn.ReLU(),
+            nn.LazyLinear(self.cfg.chunk_size * self.cfg.action_dim),
+        )
+
+    def preprocess(self, images):
+        raise NotImplementedError("Subclasses should implement this method.")
+
+    def encode(self, x):
+        raise NotImplementedError("Subclasses should implement this method.")
+
+    def forward(self, x):
+        processed = self.preprocess(x)
+        processed_cuda = processed.to("cuda")
+        features = self.encode(processed_cuda)  # (batch_size, embed_len, hidden_dim)
+
+        features = (
+            features[self.cfg.vision_token_range[0] : self.cfg.vision_token_range[1]]
+            if self.cfg.vision_token_range
+            else features
+        )
+        if self.cfg.vision_token_pooling_method == "mean":
+            features = features.mean(dim=1, keepdim=True)
+        elif self.cfg.vision_token_pooling_method == "max":
+            features, _ = features.max(dim=1, keepdim=True)
+
+        for i in range(self.cfg.num_layers):
+            layer = getattr(self, f"layer_{i}")
+            features = layer(features)
+
+        mean_out_features = features.mean(dim=1)
+        # print("mean_out_features.shape", mean_out_features.shape)
+        out = self.prediction_head(mean_out_features)
+        # print("out.shape", out.shape)
+        return out, mean_out_features
+    
+    def reset_memory(self):
+        for i in range(self.cfg.num_layers):
+            layer = getattr(self, f"layer_{i}")
+            layer.reset_memory()
+
+class DecoderWithMemory(nn.Module):
+    def __init__(
+        self,
+        config: ViTMemoryConfig,
+    ):
+        super(DecoderWithMemory, self).__init__()
+        self.cfg = config
+
+        if self.cfg.enable_memory:
+            self.memory = MemoryModule(
+                hidden_size=self.cfg.memory_size,
+                inner_learning_rate=self.cfg.inner_lr,
+                decay_factor=self.cfg.decay_factor,
+            )
+
+        num_layers = 1
+        hidden_dim = self.cfg.memory_size
+        num_heads = 4
+        self.transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=hidden_dim, nhead=num_heads, batch_first=True
+            ),
+            num_layers=num_layers,
+        )
+
+    def forward(self, x):
+        if self.cfg.enable_memory:
+            out_features = self.memory.retrieve(x)
+            out_features = torch.concat([x, out_features], dim=1)
+        else:
+            out_features = x
+
+        transformer_out = self.transformer(out_features)
+
+        if self.cfg.enable_memory:
+            self.memory.update(transformer_out)
+
+        return transformer_out
+    
+    def reset_memory(self):
+        if self.cfg.enable_memory:
+            self.memory.reset_memory()
 
 
 class VisionEncoderWithMemory(nn.Module):
@@ -180,7 +279,7 @@ class VisionEncoderWithMemory(nn.Module):
             self.memory.reset_memory()
 
 
-class DINOv2wMemory(VisionEncoderWithMemory):
+class DINOv2wMemory(MultiLayerDecoderWithMemory):
     def __init__(
         self,
         *args,
