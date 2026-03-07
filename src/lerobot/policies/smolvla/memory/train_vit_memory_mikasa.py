@@ -274,8 +274,7 @@ def main(cfg: TrainingConfig):
         data = next(data_iter)
 
         # reset memory at the start of each episode
-        if cfg.model_config.enable_memory:
-            model.memory.reset_memory()
+        model.reset_memory()
 
         loss = torch.tensor(0.0, device="cuda")
         episode_loss = []
@@ -306,7 +305,7 @@ def main(cfg: TrainingConfig):
                 imgs = rearrange(imgs, "b h w c -> b c h w")
                 imgs = torch.stack([transform(img) for img in imgs])
 
-            pred = model(imgs)
+            pred, out_features = model(imgs)
 
             normalized_action = normalize(
                 action[:, :, : cfg.model_config.action_dim],
@@ -413,8 +412,7 @@ def main(cfg: TrainingConfig):
                     # sample a batch of episodes
                     val_data = next(val_data_iter)
 
-                    if cfg.model_config.enable_memory:
-                        model.memory.reset_memory()
+                    model.reset_memory()
 
                     for frame_idx in range(len(val_data)):
                         val_imgs = (
@@ -423,7 +421,7 @@ def main(cfg: TrainingConfig):
                         val_action = val_data[frame_idx]["actions"].float()
                         val_action = val_action[:, :, : cfg.model_config.action_dim]
 
-                        val_pred = model(val_imgs)
+                        val_pred, _ = model(val_imgs)
 
                         normalized_val_action = normalize(
                             val_action,
@@ -464,8 +462,7 @@ def main(cfg: TrainingConfig):
             )
             model.train()
             model.freeze_encoder()
-            if cfg.model_config.enable_memory:
-                model.memory.reset_memory()
+            model.reset_memory()
 
         if cfg.save_steps > 0 and (
             (i + 1) % cfg.save_steps == 0 or (i + 1) == cfg.n_steps
