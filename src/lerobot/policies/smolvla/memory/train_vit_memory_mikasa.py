@@ -169,14 +169,14 @@ def data_generator(
                     [(a.numpy() if not isinstance(a, np.ndarray) else a) for a in chunk]
                 )
 
+            observations_array = np.array([
+                x[b if b < len(x) else -1][image_key].numpy()
+                for x in observations
+            ])
+            actions_array = np.array(sample_actions)
             train_sample = {
-                "observations": torch.tensor(
-                    [
-                        x[b if b < len(x) else -1][image_key].numpy()
-                        for x in observations
-                    ]
-                ),
-                "actions": torch.tensor(sample_actions),
+                "observations": torch.from_numpy(observations_array),
+                "actions": torch.from_numpy(actions_array),
                 "frame_index": b,
             }
             train_episode.append(train_sample)
