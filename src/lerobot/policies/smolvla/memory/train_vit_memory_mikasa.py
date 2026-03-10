@@ -52,9 +52,15 @@ def load_dataset(ds_name, data_dir, action_dim):
 
     available_splits = list(info.splits.keys())
 
+    val_split_name = "train"
+    if "val" in available_splits:
+        val_split_name = "val"
+    elif "test" in available_splits:
+        val_split_name = "test"
+
     val_ds = tfds.load(
         ds_name,
-        split="val" if "val" in available_splits else "test",
+        split=val_split_name,
         data_dir=data_dir,
         download=False,
     )
