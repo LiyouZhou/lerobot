@@ -340,6 +340,12 @@ def main(cfg: TrainingConfig):
             else:
                 loss += masked_abs_err.sum() / num_unmasked
 
+            if cfg.backprop_every_frame:
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+                loss = torch.tensor(0.0, device=pred.device)
+
             unnormalized_pred = unnormalize(
                 pred.clone().detach().cpu(),
                 torch.tensor(metadata["action"]["min"]),
@@ -352,9 +358,10 @@ def main(cfg: TrainingConfig):
             loss_per_dim_values.append(abs(normalized_action - pred.detach()))
             episode_loss.append(loss.item())
 
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
+        if not cfg.backprop_every_frame:
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
 
         loss_value = loss.item()
         # average over episode and batch
