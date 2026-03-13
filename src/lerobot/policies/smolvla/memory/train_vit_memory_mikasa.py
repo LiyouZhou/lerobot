@@ -212,6 +212,7 @@ class TrainingConfig:
 
     image_debug: bool = False
     image_augmentation: bool = False
+    backprop_every_frame: bool = True
 
 
 cs = ConfigStore.instance()
