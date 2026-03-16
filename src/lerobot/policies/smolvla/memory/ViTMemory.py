@@ -9,6 +9,7 @@ from timm.data.transforms_factory import create_transform
 from transformers import AutoImageProcessor, AutoModel
 from safetensors.torch import load_file
 from dataclasses import dataclass, asdict
+import os
 
 
 def normalize(x, min_val, max_val):
@@ -60,6 +61,24 @@ class MultiLayerDecoderWithMemory(nn.Module):
             nn.LazyLinear(self.cfg.chunk_size * self.cfg.action_dim),
         )
 
+        # constant value
+        self.register_buffer(
+            "action_min",
+            (
+                torch.tensor(dataset_metadata["action"]["min"])
+                if dataset_metadata
+                else torch.zeros(self.cfg.action_dim)
+            ),
+        )
+        self.register_buffer(
+            "action_max",
+            (
+                torch.tensor(dataset_metadata["action"]["max"])
+                if dataset_metadata
+                else torch.zeros(self.cfg.action_dim)
+            ),
+        )
+
     def preprocess(self, images):
         raise NotImplementedError("Subclasses should implement this method.")
 
@@ -90,7 +109,36 @@ class MultiLayerDecoderWithMemory(nn.Module):
         out = self.prediction_head(mean_out_features)
         # print("out.shape", out.shape)
         return out, mean_out_features
-    
+
+    def reset_action_cache(self):
+        self.action_cache = []
+
+    def get_action_cache(self):
+        return self.action_cache
+
+    def select_action(self, x):
+        if self.action_cache == []:
+            pred = self.forward(x)
+            pred = pred.view(-1, self.cfg.chunk_size, self.cfg.action_dim)
+
+            if (self.action_min != 0.0).any():
+                unnormalized_pred = unnormalize(
+                    pred.clone().detach().cpu(),
+                    self.action_min.detach().clone().cpu(),
+                    self.action_max.detach().clone().cpu(),
+                )
+            else:
+                unnormalized_pred = pred.clone().detach().cpu()
+
+            for i in range(self.cfg.chunk_size):
+                self.action_cache.append(unnormalized_pred[:, i, :])
+
+        return self.action_cache.pop(0)
+
+    def load(self, checkpoint_path):
+        state_dict = load_file(checkpoint_path)
+        self.load_state_dict(state_dict)
+
     def reset_memory(self):
         for i in range(self.cfg.num_layers):
             layer = getattr(self, f"layer_{i}")
