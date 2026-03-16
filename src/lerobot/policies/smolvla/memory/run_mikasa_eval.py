@@ -2,6 +2,7 @@ from collections import defaultdict
 from datetime import datetime
 import json
 import os
+import pickle
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +30,7 @@ from lerobot.policies.smolvla.memory.train_vit_memory_mikasa import TrainingConf
 sys.path.append("../..")
 
 import tensorflow as tf
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import imageio
 import numpy as np
 import plotly.graph_objects as go  # or: import plotly.graph_objs as go
@@ -42,8 +43,8 @@ from torchvision.io import write_video
 
 def save_rollout_video(rollout_images, idx, success, task_description, log_file=None):
     """Saves an MP4 replay of an episode."""
-    rollout_dir = f"./rollouts/{DATE}"
     rollout_dir = f"./rollouts/{DATE_TIME}"
+    os.makedirs(rollout_dir, exist_ok=True)
     processed_task_description = (
         task_description.lower()
         .replace(" ", "_")
@@ -75,8 +76,11 @@ class GenerateConfig:
     # LIBERO environment-specific parameters
     #################################################################################################################
     task_suite_name: str = "mikasa"                  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
-    num_steps_wait: int = 6                          # Number of steps to wait for objects to stabilize in sim
+    num_steps_no_inference: int = 6                  # Number of steps to wait before starting model inference
+    num_steps_no_action: int = 6                     # Number of steps to wait before starting to apply model actions
     num_trials_per_task: int = 50                    # Number of rollouts per task
+    max_steps: int = 500  # default max steps
+    reset_action_cache_every_step: bool = False
 
     #################################################################################################################
     # Utils
@@ -269,7 +273,7 @@ def infer_batch(images, prompts, model):
     inputs["observation.images.image"] = images
     inputs["observation.state"] = torch.zeros((batch_size, 8), device=device)
     with torch.no_grad():
-        actions = model.select_action(images)
+        actions = model.select_action(images.float().cuda())
 
     actions = actions.cpu().numpy()
     return actions
@@ -411,7 +415,6 @@ def eval_mikasa(
             # Setup
             t = 0
             replay_images = [[] for _ in range(num_envs)]
-            max_steps = 500  # default max steps
 
             print(f"Starting episode {task_episodes+1}...")
             log_file.write(f"Starting episode {task_episodes+1}...\n")
@@ -424,7 +427,10 @@ def eval_mikasa(
             # reset memory at the begining of the episode
             model.reset_memory()
             model.reset_action_cache()
-            while t < max_steps + cfg.num_steps_wait:
+            action_state_log = []
+            while t < cfg.max_steps:
+                if cfg.reset_action_cache_every_step:
+                    model.reset_action_cache()
                 # Get observation image
                 images = obs["sensor_data"]["base_camera"]["rgb"]
 
@@ -457,16 +463,9 @@ def eval_mikasa(
                     model.reset_action_cache()
                     model_is_newly_loaded = False
 
-                if t < cfg.num_steps_wait:
+                if t < cfg.num_steps_no_inference:
                     actions = env.action_space.sample()
                     actions = np.zeros(actions.shape)
-                    if t == 4:
-                        infer_batch(
-                            images=images,
-                            prompts=prompts,
-                            model=model,
-                        )
-                        model.reset_action_cache()
                 else:
                     # query VLA model for action
                     actions = infer_batch(
@@ -477,7 +476,15 @@ def eval_mikasa(
                     actions = torch.from_numpy(actions)
                     actions = actions * cfg.model_action_scale
 
+                    if t < cfg.num_steps_no_action:
+                        model.reset_action_cache()
+                        actions = env.action_space.sample()
+                        actions = np.zeros(actions.shape)
+
                 obs, reward, terminated, truncated, info = env.step(actions)
+
+                robot_state = obs["extra"]["tcp_pose"].cpu().numpy()
+                action_state_log.append((actions, robot_state))
 
                 for i in range(num_envs):
                     if terminated[i].cpu().numpy():
@@ -563,6 +570,9 @@ def eval_mikasa(
                 dist_to_target.append(final_distances[i])
                 all_rewards.append(final_rewards[i])
 
+            log_folder = Path(local_log_filepath).parent
+            with open(log_folder / f"action_state_log_{total_episodes}.pkl", "wb") as f:
+                pickle.dump(action_state_log, f)
             # Log current results
             # print(f"Success: {terminated}")
             print(f"# episodes completed so far: {total_episodes}")
