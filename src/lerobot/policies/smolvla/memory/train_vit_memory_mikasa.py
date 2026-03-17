@@ -1,8 +1,6 @@
 import json
 import math
 import os
-from dataclasses import dataclass, asdict, field
-from itertools import cycle
 from pathlib import Path
 from safetensors.torch import save_file
 
@@ -33,11 +31,16 @@ from lerobot.policies.smolvla.memory.ViTMemory import (
     normalize,
     unnormalize,
 )
+from lerobot.policies.smolvla.memory.training_config import TrainingConfig
 from lerobot.utils.utils import print_cuda_memory_usage
 from datetime import datetime
 import secrets
 import string
 
+from lerobot.policies.smolvla.memory.run_mikasa_eval import eval_mikasa
+from lerobot.policies.smolvla.memory.run_mikasa_eval import (
+    GenerateConfig as MikasaEvalConfig,
+)
 
 def prevent_tf_gpu_memory_grab():
     gpus = tf.config.list_physical_devices("GPU")
@@ -182,37 +185,6 @@ def data_generator(
             train_episode.append(train_sample)
 
         yield train_episode
-
-
-@dataclass
-class TrainingConfig:
-    # Dataset and Dataloader parameters
-    ds_name: str = "mikasa_robo_tfds/ShellGameTouch-v0"
-    data_dir: str = "/home/liyouzhou/tensorflow_datasets/"
-    image_key: str = "image"
-    batch_size: int = 32
-    episode_start_index: int = 0
-    episode_end_index: int = 0  # 0 means till the end
-    downsample_rate: int = 1
-    # action only applies after this index in each episode this is counting after trim and downsample
-    action_start_index: int = 0
-
-    # Model parameters
-    model_name: str = "dino_v2-base"
-
-    # Training parameters
-    lr: float = 0.0001
-    n_steps: int = 10000
-
-    save_steps: int = 5000
-    val_steps: int = 1000
-    num_val_steps: int = 20
-
-    model_config: ViTMemoryConfig = field(default_factory=ViTMemoryConfig)
-
-    image_debug: bool = False
-    image_augmentation: bool = False
-    backprop_every_frame: bool = True
 
 
 cs = ConfigStore.instance()
@@ -484,6 +456,27 @@ def main(cfg: TrainingConfig):
             save_path = log_dir / f"vit_memory_mikasa_step_{i+1}.safetensors"
             save_file(model.state_dict(), save_path)
             print(f"Saved model checkpoint to {save_path}")
+
+        if cfg.eval_steps > 0 and (
+            (i + 1) % cfg.eval_steps == 0 or (i + 1) == cfg.n_steps
+        ):
+            # Evaluation code can be added here, e.g., visualizing predictions vs GT
+            eval_cfg = MikasaEvalConfig(
+                task_suite_name=cfg.task_suite_name,
+                model_action_scale=cfg.model_action_scale,
+                num_envs=cfg.num_envs,
+                num_trials_per_task=cfg.num_trials_per_task,
+                use_wandb=True,
+                log_performance_graphs=False,
+                log_rollout_videos=False,  # only log videos when saving checkpoints
+                reset_action_cache_every_step=True,  # whether to reset the action cache at every step (only relevant when using action caching in Mikasa eval
+            )
+            eval_mikasa(
+                cfg=eval_cfg,
+                model=model,
+                skip_wandb_init=True,
+                training_step=i,
+            )
 
 
 if __name__ == "__main__":
