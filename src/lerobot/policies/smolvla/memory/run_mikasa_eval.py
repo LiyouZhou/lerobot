@@ -24,7 +24,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from lerobot.policies.smolvla.memory.ViTMemory import DINOv2wMemory, ViTMemoryConfig
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 from lerobot.policies.smolvla.modeling_smolvla import load_smolvla
-from lerobot.policies.smolvla.memory.train_vit_memory_mikasa import TrainingConfig
+from lerobot.policies.smolvla.memory.training_config import TrainingConfig
 
 # Append current directory so that interpreter can find experiments.robot
 sys.path.append("../..")
@@ -306,24 +306,30 @@ def eval_mikasa(
     action_dim = 7
     chunk_size = 10
     # pretrained_checkpoint = "logs/2026-01-20_01-05-51_fztjrr6x/vit_memory_mikasa_step_370.safetensors"
-    training_log_dir = Path(cfg.pretrained_checkpoint).parent
-    config_path = training_log_dir / "config.yaml"
-    training_cfg = OmegaConf.load(str(config_path))
-    print("Loaded model config:")
-    print(type(training_cfg))
-    training_cfg = OmegaConf.to_container(training_cfg, resolve=True)
+    if model is None:
+        training_log_dir = Path(cfg.pretrained_checkpoint).parent
+        config_path = training_log_dir / "config.yaml"
+        training_cfg = OmegaConf.load(str(config_path))
+        print("Loaded model config:")
+        print(type(training_cfg))
+        training_cfg = OmegaConf.to_container(training_cfg, resolve=True)
 
-    print(model)
-    model_cfg = ViTMemoryConfig(
-        **training_cfg["model_config"],
-    )
-    print("model_cfg",model_cfg)
-    model = DINOv2wMemory(
-        config=model_cfg,
-    )
+        print(model)
+        model_cfg = ViTMemoryConfig(
+            **training_cfg["model_config"],
+        )
+        print("model_cfg", model_cfg)
+        model = DINOv2wMemory(
+            config=model_cfg,
+        )
+        model_is_newly_loaded = True
+    else:
+        model_is_newly_loaded = False
+        model.reset_memory()
+        model.reset_action_cache()
+
     model.to("cuda")
     model.eval()
-    model_is_newly_loaded = True
 
     # Initialize local logging
     run_id = f"EVAL-{cfg.task_suite_name}-{DATE_TIME}"
@@ -565,7 +571,9 @@ def eval_mikasa(
                         wandb_data[rollout_video_topic] = wandb.Video(
                             mp4_path, format="mp4"
                         )
-                    wandb.log(wandb_data)
+                    wandb.log(
+                        wandb_data, step=training_step if training_step != 0 else None
+                    )
 
                 dist_to_target.append(final_distances[i])
                 all_rewards.append(final_rewards[i])
@@ -608,7 +616,8 @@ def eval_mikasa(
                     f"task/{task_name}/success_rate": task_success_rate,
                     f"task/{task_name}/avg_distance_to_target": avg_dist_to_target,
                     f"task/{task_name}/avg_reward": average_reward,
-                }
+                },
+                step=training_step if training_step != 0 else None
             )
 
     if cfg.use_wandb and cfg.log_performance_graphs:
@@ -678,7 +687,8 @@ def eval_mikasa(
                 "task_summary/distance_to_target_plot": create_boxplot(
                     "Distance to Target", plot_data_key="distance_to_target"
                 ),
-            }
+            },
+            step=training_step if training_step != 0 else None
         )
 
     # Save local log file
@@ -693,7 +703,8 @@ def eval_mikasa(
                 "total/current_model_step": int(
                     os.environ.get("CURRENT_TRAINING_STEP", 0)
                 ),
-            }
+            },
+            step=training_step if training_step != 0 else None
         )
         wandb.save(local_log_filepath)
 

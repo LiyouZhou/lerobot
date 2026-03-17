@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from transformers import ViTImageProcessor
 from lerobot.policies.smolvla.memory.module import MemoryModule
 import timm
 from tqdm import trange
@@ -118,7 +117,7 @@ class MultiLayerDecoderWithMemory(nn.Module):
 
     def select_action(self, x):
         if self.action_cache == []:
-            pred = self.forward(x)
+            pred, _ = self.forward(x)
             pred = pred.view(-1, self.cfg.chunk_size, self.cfg.action_dim)
 
             if (self.action_min != 0.0).any():
@@ -291,7 +290,7 @@ class VisionEncoderWithMemory(nn.Module):
         # print("mean_out_features.shape", mean_out_features.shape)
         out = self.prediction_head(mean_out_features)
         # print("out.shape", out.shape)
-        return out
+        return out, mean_out_features
 
     def reset_action_cache(self):
         self.action_cache = []
@@ -443,7 +442,7 @@ if __name__ == "__main__":
 
         gt = []
         if enable_memory:
-            model.memory.reset_memory()
+            model.reset_memory()
         pbar = trange(episode_length, position=1, leave=False)
         for j in pbar:
             data = next(dataloader_iter)
@@ -460,7 +459,7 @@ if __name__ == "__main__":
             if gt == []:
                 gt = labels
 
-            pred = model(imgs.to("cuda"))
+            pred, _ = model(imgs.to("cuda"))
             loss = nn.CrossEntropyLoss()(pred, gt.to("cuda"))
 
             loss.backward()
@@ -477,9 +476,6 @@ if __name__ == "__main__":
 
             wandb.log(
                 {
-                    f"train/inner_loss/{j}": (
-                        model.memory.last_inner_loss if enable_memory else 0.0
-                    ),
                     f"train/loss/{j}": loss_value,
                     f"train/accuracy/{j}": accuracy,
                 },
