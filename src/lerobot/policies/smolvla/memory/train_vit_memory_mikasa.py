@@ -341,6 +341,7 @@ def main(cfg: TrainingConfig):
             else:
                 loss += masked_abs_err.sum() / num_unmasked
 
+            loss_value = loss.item()
             if cfg.backprop_every_frame:
                 loss.backward()
                 optimizer.step()
@@ -357,7 +358,7 @@ def main(cfg: TrainingConfig):
             )
             mse_values.append(mse.item())
             loss_per_dim_values.append(abs(normalized_action - pred.detach()))
-            episode_loss.append(loss.item())
+            episode_loss.append(loss_value)
 
         if not cfg.backprop_every_frame:
             loss.backward()
