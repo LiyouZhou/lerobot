@@ -285,33 +285,13 @@ def main(cfg: TrainingConfig):
                 imgs = torch.stack([transform(img) for img in imgs])
 
             pred, out_features = model(imgs)
+            loss_for_this_frame = model.compute_loss(pred, action)
 
-            normalized_action = normalize(
-                action[:, :, : cfg.model_config.action_dim],
-                torch.tensor(metadata["action"]["min"]),
-                torch.tensor(metadata["action"]["max"]),
-            )
-            normalized_action = normalized_action.to("cuda")
-
-            pred = pred.view(
-                -1, cfg.model_config.chunk_size, cfg.model_config.action_dim
-            )
-
-            # If GT action is all zeros for a timestep, mask it out from the loss
-            # action: (batch, chunk_size, action_dim)
-            mask = (action.abs().sum(dim=-1) != 0).to(pred.device)  # (batch, chunk)
-            abs_err = torch.abs(pred - normalized_action)  # (batch, chunk, action_dim)
-            masked_abs_err = abs_err * mask.unsqueeze(-1).float()
-
-            num_unmasked = mask.sum() * pred.shape[-1]  # scalar tensor
-            if (
-                data[frame_idx]["frame_index"] < cfg.action_start_index
-                or num_unmasked.item() == 0
-            ):
+            if data[frame_idx]["frame_index"] < cfg.action_start_index:
                 # No supervised targets in this batch/step: zero loss (keep requires_grad)
                 loss += torch.tensor(0.0, device=pred.device)
             else:
-                loss += masked_abs_err.sum() / num_unmasked
+                loss += loss_for_this_frame
 
             loss_value = loss.item()
             if cfg.backprop_every_frame:
@@ -320,15 +300,14 @@ def main(cfg: TrainingConfig):
                 optimizer.zero_grad()
                 loss = torch.tensor(0.0, device=pred.device)
 
-            unnormalized_pred = unnormalize(
-                pred.clone().detach().cpu(),
-                torch.tensor(metadata["action"]["min"]),
-                torch.tensor(metadata["action"]["max"]),
-            )
-            mse = nn.MSELoss(reduction="mean")(
-                unnormalized_pred, action[:, :, : cfg.model_config.action_dim]
-            )
+            mse = model.compute_mse(pred, action)
             mse_values.append(mse.item())
+
+            normalized_action = model.normalize(action)
+            pred = pred.detach().view(
+                -1, cfg.model_config.chunk_size, cfg.model_config.action_dim
+            )
+            pred = pred.to(normalized_action.device)
             loss_per_dim_values.append(abs(normalized_action - pred.detach()))
             episode_loss.append(loss_value)
 
@@ -406,30 +385,10 @@ def main(cfg: TrainingConfig):
                             val_data[frame_idx]["observations"].float().to("cuda")
                         )
                         val_action = val_data[frame_idx]["actions"].float()
-                        val_action = val_action[:, :, : cfg.model_config.action_dim]
 
                         val_pred, _ = model(val_imgs)
-
-                        normalized_val_action = normalize(
-                            val_action,
-                            torch.tensor(metadata["action"]["min"]),
-                            torch.tensor(metadata["action"]["max"]),
-                        )
-                        normalized_val_action = normalized_val_action.to("cuda")
-
-                        val_pred = val_pred.view(
-                            -1, cfg.model_config.chunk_size, cfg.model_config.action_dim
-                        )
-
-                        val_loss = nn.L1Loss()(val_pred, normalized_val_action)
-                        unnormalized_val_pred = unnormalize(
-                            val_pred.clone().detach().cpu(),
-                            torch.tensor(metadata["action"]["min"]),
-                            torch.tensor(metadata["action"]["max"]),
-                        )
-                        val_mse = nn.MSELoss(reduction="mean")(
-                            unnormalized_val_pred, val_action
-                        )
+                        val_loss = model.compute_loss(val_pred, val_action)
+                        val_mse = model.compute_mse(val_pred, val_action)
 
                         val_losses.append(val_loss.item())
                         val_mses.append(val_mse.item())

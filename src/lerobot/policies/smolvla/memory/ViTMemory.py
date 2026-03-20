@@ -109,6 +109,63 @@ class MultiLayerDecoderWithMemory(nn.Module):
         # print("out.shape", out.shape)
         return out, mean_out_features
 
+    def compute_loss(self, pred, gt):
+        normalized_action = self.normalize(
+            gt[:, :, : self.cfg.action_dim],
+        )
+        normalized_action = normalized_action.to("cuda")
+        pred = pred.view(-1, self.cfg.chunk_size, self.cfg.action_dim)
+
+        # If GT action is all zeros for a timestep, mask it out from the loss
+        # action: (batch, chunk_size, action_dim)
+        mask = (gt.abs().sum(dim=-1) != 0).to(pred.device)  # (batch, chunk)
+        abs_err = torch.abs(pred - normalized_action)  # (batch, chunk, action_dim)
+        masked_abs_err = abs_err * mask.unsqueeze(-1).float()
+
+        num_unmasked = mask.sum() * pred.shape[-1]  # scalar tensor
+        if num_unmasked == 0:
+            return torch.tensor(0.0, device=pred.device)
+
+        loss = masked_abs_err.sum() / num_unmasked
+        return loss
+
+    def compute_mse(self, pred, gt):
+        pred = pred.view(-1, self.cfg.chunk_size, self.cfg.action_dim)
+
+        unnormalized_pred = self.unnormalize(
+            pred.clone().detach().cpu(),
+        )
+
+        mask = (gt.abs().sum(dim=-1) != 0).to(
+            unnormalized_pred.device
+        )  # (batch, chunk)
+        masked_unnormalized_pred = unnormalized_pred * mask.unsqueeze(-1).float()
+
+        mse = nn.MSELoss(reduction="mean")(
+            masked_unnormalized_pred, gt[:, :, : self.cfg.action_dim]
+        )
+        return mse
+
+    def normalize(self, x):
+        x = x.cpu()
+        min_val = self.action_min.detach().clone().cpu()
+        max_val = self.action_max.detach().clone().cpu()
+
+        min_val = min_val[: x.shape[-1]]
+        max_val = max_val[: x.shape[-1]]
+        return (x - min_val.to(x.device)) / (
+            max_val.to(x.device) - min_val.to(x.device)
+        )
+
+    def unnormalize(self, x):
+        x = x.cpu()
+        min_val = self.action_min.detach().clone().cpu()
+        max_val = self.action_max.detach().clone().cpu()
+
+        min_val = min_val[: x.shape[-1]]
+        max_val = max_val[: x.shape[-1]]
+        return x * (max_val.to(x.device) - min_val.to(x.device)) + min_val.to(x.device)
+
     def reset_action_cache(self):
         self.action_cache = []
 
