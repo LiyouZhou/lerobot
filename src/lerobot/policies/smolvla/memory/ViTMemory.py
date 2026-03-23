@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from lerobot.policies.smolvla.memory.module import MemoryModule
+from lerobot.policies.smolvla.memory.slot_memory import SlotMemory
 import timm
 from tqdm import trange
 from timm.data import resolve_data_config
@@ -40,6 +41,9 @@ class ViTMemoryConfig:
         None  # "mean", "max", or None (no pooling, use all tokens)
     )
     num_layers: int = 1
+    memory_type: str = "titan"
+    memory_num_slots: int = 10  # Only used if memory_type is "slot"
+
 
 class MultiLayerDecoderWithMemory(nn.Module):
     def __init__(
@@ -200,6 +204,7 @@ class MultiLayerDecoderWithMemory(nn.Module):
             layer = getattr(self, f"layer_{i}")
             layer.reset_memory()
 
+
 class DecoderWithMemory(nn.Module):
     def __init__(
         self,
@@ -209,36 +214,36 @@ class DecoderWithMemory(nn.Module):
         self.cfg = config
 
         if self.cfg.enable_memory:
-            self.memory = MemoryModule(
-                hidden_size=self.cfg.memory_size,
-                inner_learning_rate=self.cfg.inner_lr,
-                decay_factor=self.cfg.decay_factor,
-            )
+            if self.cfg.memory_type == "slot":
+                self.memory = SlotMemory(
+                    embed_dim=self.cfg.memory_size, num_slots=self.cfg.memory_num_slots
+                )
+            elif "titan" in self.cfg.memory_type:
+                self.memory = MemoryModule(
+                    hidden_size=self.cfg.memory_size,
+                    inner_learning_rate=self.cfg.inner_lr,
+                    decay_factor=self.cfg.decay_factor,
+                )
+            else:
+                raise ValueError(f"Unsupported memory type: {self.memory_type}")
 
-        num_layers = 1
         hidden_dim = self.cfg.memory_size
         num_heads = 4
-        self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=hidden_dim, nhead=num_heads, batch_first=True
-            ),
-            num_layers=num_layers,
+        self.attn = nn.MultiheadAttention(
+            embed_dim=hidden_dim, num_heads=num_heads, batch_first=True
         )
 
     def forward(self, x):
         if self.cfg.enable_memory:
-            out_features = self.memory.retrieve(x)
-            out_features = torch.concat([x, out_features], dim=1)
+             self.memory.update(x)
+             out_features = self.memory.retrieve(x)
         else:
             out_features = x
 
-        transformer_out = self.transformer(out_features)
-
-        if self.cfg.enable_memory:
-            self.memory.update(transformer_out)
+        transformer_out, _ = self.attn(out_features, out_features, out_features)
 
         return transformer_out
-    
+
     def reset_memory(self):
         if self.cfg.enable_memory:
             self.memory.reset_memory()
