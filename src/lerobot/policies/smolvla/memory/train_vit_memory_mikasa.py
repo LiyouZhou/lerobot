@@ -237,7 +237,7 @@ def main(cfg: TrainingConfig):
     model.to("cuda")
     model.train()
     model.freeze_encoder()
-    transform = T.RandomResizedCrop(size=128, scale=(0.8, 1.0), ratio=(1, 1))
+    transform = T.RandomResizedCrop(size=128, scale=(0.9, 0.9), ratio=(1, 1))
 
     optimizer = torch.optim.Adam(
         list(model.parameters()),
@@ -436,6 +436,7 @@ def main(cfg: TrainingConfig):
                 model=model,
                 skip_wandb_init=True,
                 training_step=i,
+                center_crop_images=cfg.image_augmentation,
             )
 
 
