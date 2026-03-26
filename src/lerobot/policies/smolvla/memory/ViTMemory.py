@@ -43,6 +43,7 @@ class ViTMemoryConfig:
     num_layers: int = 1
     memory_type: str = "titan"
     memory_num_slots: int = 10  # Only used if memory_type is "slot"
+    pre_trained_weights: str = "/does/not/exist/weights.safetensors"
 
 
 class MultiLayerDecoderWithMemory(nn.Module):
@@ -82,6 +83,8 @@ class MultiLayerDecoderWithMemory(nn.Module):
             ),
         )
 
+        self.model_initialised = False
+
     def preprocess(self, images):
         raise NotImplementedError("Subclasses should implement this method.")
 
@@ -111,6 +114,15 @@ class MultiLayerDecoderWithMemory(nn.Module):
         # print("mean_out_features.shape", mean_out_features.shape)
         out = self.prediction_head(mean_out_features)
         # print("out.shape", out.shape)
+
+        if not self.model_initialised and os.path.exists(self.cfg.pre_trained_weights):
+            print(f"Loading pre-trained weights from {self.cfg.pre_trained_weights}")
+            self.load(self.cfg.pre_trained_weights)
+            self.model_initialised = True
+            self.reset_memory()
+            self.reset_action_cache()
+            return self.forward(x)
+
         return out, mean_out_features
 
     def compute_loss(self, pred, gt):
