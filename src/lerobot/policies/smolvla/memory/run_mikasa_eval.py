@@ -6,7 +6,7 @@ import pickle
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Tuple, Union
 from xml.parsers.expat import model
 import draccus
 import einops
@@ -39,6 +39,37 @@ DATE = datetime.now().strftime("%Y-%m-%d")
 DATE_TIME = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 from torchvision.io import write_video
+
+
+def resize_image_for_policy(
+    img: np.ndarray, resize_size: Union[int, Tuple[int, int]]
+) -> np.ndarray:
+    """
+    Resize an image to match the policy's expected input size.
+
+    Uses the same resizing scheme as in the training data pipeline for distribution matching.
+
+    Args:
+        img: Numpy array containing the image
+        resize_size: Target size as int (square) or (height, width) tuple
+
+    Returns:
+        np.ndarray: The resized image
+    """
+    assert isinstance(resize_size, int) or isinstance(resize_size, tuple)
+    if isinstance(resize_size, int):
+        resize_size = (resize_size, resize_size)
+
+    # Resize using the same pipeline as in RLDS dataset builder
+    img = tf.image.encode_jpeg(img)  # Encode as JPEG
+    img = tf.io.decode_image(
+        img, expand_animations=False, dtype=tf.uint8
+    )  # Decode back
+    img = tf.image.resize(img, resize_size, method="lanczos3", antialias=True)
+    img = tf.cast(img, tf.float32)  # Convert to float for potential further processing
+    img = tf.cast(tf.clip_by_value(img, 0, 255), tf.uint8)
+
+    return img.numpy()
 
 
 def save_rollout_video(rollout_images, idx, success, task_description, log_file=None):
@@ -300,6 +331,7 @@ def eval_mikasa(
     model: DINOv2wMemory | None = None,
     skip_wandb_init: bool = False,
     training_step: int = 0,
+    center_crop_images: bool = False,
 ) -> None:
     enable_memory = True
     inner_lr = 0.01
@@ -439,6 +471,15 @@ def eval_mikasa(
                     model.reset_action_cache()
                 # Get observation image
                 images = obs["sensor_data"]["base_camera"]["rgb"]
+
+                images = torch.stack(
+                    [
+                        torch.Tensor(
+                            center_crop(resize_image_for_policy(img.cpu().numpy(), 128))
+                        ).to(torch.uint8)
+                        for img in images
+                    ]
+                )
 
                 # Save preprocessed image for replay video
                 for i in range(num_envs):
@@ -617,7 +658,7 @@ def eval_mikasa(
                     f"task/{task_name}/avg_distance_to_target": avg_dist_to_target,
                     f"task/{task_name}/avg_reward": average_reward,
                 },
-                step=training_step if training_step != 0 else None
+                step=training_step if training_step != 0 else None,
             )
 
     if cfg.use_wandb and cfg.log_performance_graphs:
@@ -688,7 +729,7 @@ def eval_mikasa(
                     "Distance to Target", plot_data_key="distance_to_target"
                 ),
             },
-            step=training_step if training_step != 0 else None
+            step=training_step if training_step != 0 else None,
         )
 
     # Save local log file
@@ -704,7 +745,7 @@ def eval_mikasa(
                     os.environ.get("CURRENT_TRAINING_STEP", 0)
                 ),
             },
-            step=training_step if training_step != 0 else None
+            step=training_step if training_step != 0 else None,
         )
         wandb.save(local_log_filepath)
 
