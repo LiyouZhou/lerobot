@@ -128,6 +128,9 @@ class GenerateConfig:
 
     log_rollout_videos: bool = True                 # Whether to save rollout videos
     log_performance_graphs: bool = True              # Whether to log model graphs to W&B
+
+    center_crop_images: bool = False
+    final_pose_as_target: bool = False
     #################################################################################################################
     # fmt: on
 
@@ -331,7 +334,6 @@ def eval_mikasa(
     model: DINOv2wMemory | None = None,
     skip_wandb_init: bool = False,
     training_step: int = 0,
-    center_crop_images: bool = False,
 ) -> None:
     enable_memory = True
     inner_lr = 0.01
@@ -399,7 +401,9 @@ def eval_mikasa(
         env_kwargs_rgb = dict(
             num_envs=num_envs,
             obs_mode="rgb",
-            control_mode="pd_ee_delta_pose",
+            control_mode=(
+                "pd_ee_pose" if cfg.final_pose_as_target else "pd_ee_delta_pose"
+            ),
             render_mode="all",
             sim_backend="gpu",
             reward_mode="normalized_dense",
@@ -476,6 +480,8 @@ def eval_mikasa(
                     [
                         torch.Tensor(
                             center_crop(resize_image_for_policy(img.cpu().numpy(), 128))
+                            if cfg.center_crop_images
+                            else resize_image_for_policy(img.cpu().numpy(), 128)
                         ).to(torch.uint8)
                         for img in images
                     ]

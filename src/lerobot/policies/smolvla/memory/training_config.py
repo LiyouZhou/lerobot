@@ -32,6 +32,8 @@ class TrainingConfig:
     image_augmentation: bool = False
     backprop_every_frame: bool = True
 
+    predict_final_pose: bool = False
+
     # eval
     eval_steps: int = 1000
     task_suite_name: str = "mikasa_remember_color"

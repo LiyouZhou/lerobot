@@ -38,9 +38,11 @@ import secrets
 import string
 
 from lerobot.policies.smolvla.memory.run_mikasa_eval import eval_mikasa
+from scipy.spatial.transform import Rotation
 from lerobot.policies.smolvla.memory.run_mikasa_eval import (
     GenerateConfig as MikasaEvalConfig,
 )
+
 
 def prevent_tf_gpu_memory_grab():
     gpus = tf.config.list_physical_devices("GPU")
@@ -70,8 +72,12 @@ def load_dataset(ds_name, data_dir, action_dim):
 
     metadata = {
         "action": {
-            "max": np.array([-math.inf] * action_dim),
-            "min": np.array([math.inf] * action_dim),
+            "max": None,
+            "min": None,
+        },
+        "state": {
+            "max": None,
+            "min": None,
         },
     }
 
@@ -87,15 +93,44 @@ def load_dataset(ds_name, data_dir, action_dim):
             for step in episode["steps"]:
                 action = step["action"].numpy()
                 metadata["action"]["max"] = np.maximum(
-                    metadata["action"]["max"], action
+                    (
+                        metadata["action"]["max"]
+                        if metadata["action"]["max"] is not None
+                        else action
+                    ),
+                    action,
                 )
                 metadata["action"]["min"] = np.minimum(
-                    metadata["action"]["min"], action
+                    (
+                        metadata["action"]["min"]
+                        if metadata["action"]["min"] is not None
+                        else action
+                    ),
+                    action,
                 )
-        metadata["action"]["max"] = list(metadata["action"]["max"])
-        metadata["action"]["min"] = list(metadata["action"]["min"])
+                state = step["observation"]["state"].numpy()
+                metadata["state"]["max"] = np.maximum(
+                    (
+                        metadata["state"]["max"]
+                        if metadata["state"]["max"] is not None
+                        else state
+                    ),
+                    state,
+                )
+                metadata["state"]["min"] = np.minimum(
+                    (
+                        metadata["state"]["min"]
+                        if metadata["state"]["min"] is not None
+                        else state
+                    ),
+                    state,
+                )
+
         print(f"Saving dataset statistics to disk... {metadata_path}")
         with open(metadata_path, "w") as fd:
+            for key in metadata:
+                metadata[key]["max"] = metadata[key]["max"].tolist()
+                metadata[key]["min"] = metadata[key]["min"].tolist()
             json.dump(metadata, fd)
 
     return ds, val_ds, metadata
@@ -109,6 +144,7 @@ def data_generator(
     episode_end_index=0,
     downsample_rate=1,
     image_key="image",
+    predict_final_pose=False,
 ):
     while True:
         observations = []
@@ -172,14 +208,24 @@ def data_generator(
                     [(a.numpy() if not isinstance(a, np.ndarray) else a) for a in chunk]
                 )
 
-            observations_array = np.array([
-                x[b if b < len(x) else -1][image_key].numpy()
-                for x in observations
-            ])
+            observations_array = np.array(
+                [x[b if b < len(x) else -1][image_key].numpy() for x in observations]
+            )
             actions_array = np.array(sample_actions)
+            final_action = np.array(
+                [x[-1].numpy() for x in actions]
+            )
+            gripper = final_action[:, -1:] # (batch_size, action_dim)
+            final_state_array = np.array([x[-1]["state"].numpy()[:7] for x in observations])
+            quaternion = final_state_array[:, 3:]
+            euler_angles = Rotation.from_quat(quaternion).as_euler('xyz')
+            final_state_array = np.concatenate([final_state_array[:, :3], euler_angles, gripper], axis=1)
+            final_state_array = np.expand_dims(final_state_array, axis=1)
             train_sample = {
                 "observations": torch.from_numpy(observations_array),
-                "actions": torch.from_numpy(actions_array),
+                "actions": torch.from_numpy(
+                    final_state_array if predict_final_pose else actions_array
+                ),
                 "frame_index": b,
             }
             train_episode.append(train_sample)
@@ -228,7 +274,13 @@ def main(cfg: TrainingConfig):
         cfg.episode_end_index,
         cfg.downsample_rate,
         cfg.image_key,
+        cfg.predict_final_pose,
     )
+
+    # pretend the final state is the "action" to predict if predict_final_pose is True
+    if cfg.predict_final_pose:
+        metadata["action"]["max"] = metadata["state"]["max"]
+        metadata["action"]["min"] = metadata["state"]["min"]
 
     model = DINOv2wMemory(
         cfg.model_config,
@@ -303,7 +355,9 @@ def main(cfg: TrainingConfig):
             mse = model.compute_mse(pred, action)
             mse_values.append(mse.item())
 
-            normalized_action = model.normalize(action)
+            normalized_action = model.normalize(
+                action[:, :, : cfg.model_config.action_dim],
+            )
             pred = pred.detach().view(
                 -1, cfg.model_config.chunk_size, cfg.model_config.action_dim
             )
@@ -366,6 +420,7 @@ def main(cfg: TrainingConfig):
                 cfg.episode_end_index,
                 cfg.downsample_rate,
                 cfg.image_key,
+                cfg.predict_final_pose,
             )
 
             # Validation
@@ -429,14 +484,15 @@ def main(cfg: TrainingConfig):
                 use_wandb=True,
                 log_performance_graphs=False,
                 log_rollout_videos=False,  # only log videos when saving checkpoints
-                reset_action_cache_every_step=True,  # whether to reset the action cache at every step (only relevant when using action caching in Mikasa eval
+                reset_action_cache_every_step=True,
+                center_crop_images=cfg.image_augmentation,
+                final_pose_as_target=cfg.predict_final_pose,  # whether to reset the action cache at every step (only relevant when using action caching in Mikasa eval
             )
             eval_mikasa(
                 cfg=eval_cfg,
                 model=model,
                 skip_wandb_init=True,
                 training_step=i,
-                center_crop_images=cfg.image_augmentation,
             )
 
 
