@@ -212,23 +212,27 @@ def data_generator(
                 [x[b if b < len(x) else -1][image_key].numpy() for x in observations]
             )
             actions_array = np.array(sample_actions)
-            final_action = np.array(
-                [x[-1].numpy() for x in actions]
+            final_action = np.array([x[-1].numpy() for x in actions])
+            gripper = final_action[:, -1:]  # (batch_size, action_dim)
+            final_state_array = np.array(
+                [x[-1]["state"].numpy()[:7] for x in observations]
             )
-            gripper = final_action[:, -1:] # (batch_size, action_dim)
-            final_state_array = np.array([x[-1]["state"].numpy()[:7] for x in observations])
             quaternion = final_state_array[:, 3:]
-            euler_angles = Rotation.from_quat(quaternion).as_euler('xyz')
-            final_state_array = np.concatenate([final_state_array[:, :3], euler_angles, gripper], axis=1)
+            euler_angles = Rotation.from_quat(quaternion).as_euler("xyz")
+            final_state_array = np.concatenate(
+                [final_state_array[:, :3], euler_angles, gripper], axis=1
+            )
             final_state_array = np.expand_dims(final_state_array, axis=1)
-            current_state_array = np.array([x[b if b < len(x) else -1]["state"].numpy() for x in observations])
+            current_state_array = np.array(
+                [x[b if b < len(x) else -1]["state"].numpy() for x in observations]
+            )
             train_sample = {
                 "observations": torch.from_numpy(observations_array),
                 "actions": torch.from_numpy(
                     final_state_array if predict_final_pose else actions_array
                 ),
                 "frame_index": b,
-                "state": torch.from_numpy(current_state_array)
+                "state": torch.from_numpy(current_state_array),
             }
             train_episode.append(train_sample)
 
