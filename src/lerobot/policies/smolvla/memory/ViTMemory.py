@@ -63,7 +63,11 @@ class MultiLayerDecoderWithMemory(nn.Module):
             setattr(self, f"layer_{i}", layer)
 
         self.prediction_head = nn.Sequential(
-            nn.LazyLinear(self.cfg.memory_size),
+            nn.LazyLinear(self.cfg.memory_size * 2),
+            nn.ReLU(),
+            nn.LazyLinear(self.cfg.memory_size * 2),
+            nn.ReLU(),
+            nn.LazyLinear(self.cfg.memory_size * 2),
             nn.ReLU(),
             nn.LazyLinear(self.cfg.chunk_size * self.cfg.action_dim),
         )
