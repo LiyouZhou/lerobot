@@ -19,6 +19,7 @@ from torch.utils.data import Dataset
 from torchvision import datasets
 from torchvision import transforms as T
 from torchvision.transforms import Resize, ToTensor
+from torchvision.transforms.functional import center_crop, resize
 from tqdm import tqdm, trange
 
 import wandb
@@ -455,6 +456,17 @@ def main(cfg: TrainingConfig):
                         val_imgs = (
                             val_data[frame_idx]["observations"].float().to("cuda")
                         )
+                        val_imgs = rearrange(val_imgs, "b h w c -> b c h w")
+                        val_imgs = center_crop(
+                            val_imgs,
+                            [
+                                int(val_imgs.shape[-2] * 0.9),
+                                int(val_imgs.shape[-1] * 0.9),
+                            ],
+                        )
+                        val_imgs = resize(val_imgs, [128, 128])
+                        val_imgs = rearrange(val_imgs, "b c h w -> b h w c")
+
                         val_action = val_data[frame_idx]["actions"].float()
 
                         state = (

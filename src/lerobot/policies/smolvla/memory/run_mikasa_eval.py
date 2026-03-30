@@ -9,8 +9,9 @@ from pathlib import Path
 from typing import Optional, Tuple, Union
 from xml.parsers.expat import model
 import draccus
-import einops
+from einops import rearrange
 import torch
+from torchvision import transforms as T
 
 from omegaconf import OmegaConf
 import numpy as np
@@ -492,12 +493,20 @@ def eval_mikasa(
                     secondary_img = secondary_images[i]
                     img = resize_image_for_policy(img.cpu().numpy(), 128)
                     secondary_img = resize_image_for_policy(secondary_img.cpu().numpy(), 128)
-                    if cfg.center_crop_images:
-                        img = center_crop(img, crop_scale=0.9)
-                        secondary_img = center_crop(secondary_img, crop_scale=0.9)
-
                     img = np.concatenate([img, secondary_img], axis=-1)
                     img = torch.from_numpy(img).to(torch.uint8)
+                    if cfg.center_crop_images:
+                        img = rearrange(img, "b h w c -> b c h w")
+                        img = T.functional.center_crop(
+                            img,
+                            [
+                                int(img.shape[-2] * 0.9),
+                                int(img.shape[-1] * 0.9),
+                            ],
+                        )
+                        img = T.functional.resize(img, [128, 128])
+                        img = rearrange(img, "b c h w -> b h w c")
+
                     processed_images.append(img)
 
                 images = torch.stack(processed_images)
