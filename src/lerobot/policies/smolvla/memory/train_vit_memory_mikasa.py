@@ -447,7 +447,13 @@ def main(cfg: TrainingConfig):
                         )
                         val_action = val_data[frame_idx]["actions"].float()
 
-                        val_pred, _ = model(val_imgs)
+                        state = (
+                            val_data[frame_idx]["state"].float().to("cuda")
+                            if "state" in val_data[frame_idx]
+                            else None
+                        )
+
+                        val_pred, _ = model(val_imgs, state=state)
                         val_loss = model.compute_loss(val_pred, val_action)
                         val_mse = model.compute_mse(val_pred, val_action)
 
