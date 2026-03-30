@@ -143,7 +143,7 @@ def data_generator(
     episode_start_index=0,
     episode_end_index=0,
     downsample_rate=1,
-    image_key="image",
+    image_key=["image", "wrist_image"],
     predict_final_pose=False,
 ):
     while True:
@@ -209,7 +209,13 @@ def data_generator(
                 )
 
             observations_array = np.array(
-                [x[b if b < len(x) else -1][image_key].numpy() for x in observations]
+                [
+                    np.concatenate(
+                        [x[b if b < len(x) else -1][key].numpy() for key in image_key],
+                        axis=-1,
+                    )
+                    for x in observations
+                ]
             )
             actions_array = np.array(sample_actions)
             final_action = np.array([x[-1].numpy() for x in actions])

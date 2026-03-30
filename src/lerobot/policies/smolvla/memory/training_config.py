@@ -7,7 +7,7 @@ class TrainingConfig:
     # Dataset and Dataloader parameters
     ds_name: str = "mikasa_robo_tfds/ShellGameTouch-v0"
     data_dir: str = "/home/liyouzhou/tensorflow_datasets/"
-    image_key: str = "image"
+    image_key: list = field(default_factory=lambda: ["image", "wrist_image"])
     batch_size: int = 32
     episode_start_index: int = 0
     episode_end_index: int = 0  # 0 means till the end

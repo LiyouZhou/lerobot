@@ -475,6 +475,7 @@ def eval_mikasa(
                     model.reset_action_cache()
                 # Get observation image
                 images = obs["sensor_data"]["base_camera"]["rgb"]
+                secondary_images = obs["sensor_data"]["hand_camera"]["rgb"]
 
                 if model.cfg.proprioception:
                     tcp_pose = obs["extra"]["tcp_pose"].cpu().numpy()
@@ -485,21 +486,26 @@ def eval_mikasa(
                 else:
                     state = None
 
-                images = torch.stack(
-                    [
-                        torch.Tensor(
-                            center_crop(resize_image_for_policy(img.cpu().numpy(), 128))
-                            if cfg.center_crop_images
-                            else resize_image_for_policy(img.cpu().numpy(), 128)
-                        ).to(torch.uint8)
-                        for img in images
-                    ]
-                )
+                processed_images = []
+                for i in range(len(images)):
+                    img = images[i]
+                    secondary_img = secondary_images[i]
+                    img = resize_image_for_policy(img.cpu().numpy(), 128)
+                    secondary_img = resize_image_for_policy(secondary_img.cpu().numpy(), 128)
+                    if cfg.center_crop_images:
+                        img = center_crop(img, crop_scale=0.9)
+                        secondary_img = center_crop(secondary_img, crop_scale=0.9)
+
+                    img = np.concatenate([img, secondary_img], axis=-1)
+                    img = torch.from_numpy(img).to(torch.uint8)
+                    processed_images.append(img)
+
+                images = torch.stack(processed_images)
 
                 # Save preprocessed image for replay video
                 for i in range(num_envs):
                     # Add timestep text to top right of image
-                    img_pil = Image.fromarray(images[i].cpu().numpy())
+                    img_pil = Image.fromarray(images[i][:,:,:3].cpu().numpy())
                     draw = ImageDraw.Draw(img_pil)
                     # Use default font
                     font = ImageFont.load_default()
@@ -510,8 +516,8 @@ def eval_mikasa(
                     # Position at top right with small margin
                     position = (img_pil.width - text_width - 10, 10)
                     draw.text(position, text, fill="white", font=font)
-                    images[i] = torch.from_numpy(np.array(img_pil)).to(images[i].device)
-                    replay_images[i].append(images[i].detach().clone())
+                    img = torch.from_numpy(np.array(img_pil)).to(images[i].device)
+                    replay_images[i].append(img.detach().clone())
 
                 if model_is_newly_loaded:
                     # run a inference to force initialisation of the memories

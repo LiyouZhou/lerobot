@@ -107,19 +107,26 @@ class MultiLayerDecoderWithMemory(nn.Module):
                 "Proprioception is enabled but no state input is provided."
             )
 
-        processed = self.preprocess(x)
-        processed_cuda = processed.to("cuda")
-        features = self.encode(processed_cuda)  # (batch_size, embed_len, hidden_dim)
+        main_image = x[:,:3]
+        secondary_image = x[:,3:6]
 
-        features = (
-            features[self.cfg.vision_token_range[0] : self.cfg.vision_token_range[1]]
-            if self.cfg.vision_token_range
-            else features
-        )
-        if self.cfg.vision_token_pooling_method == "mean":
-            features = features.mean(dim=1, keepdim=True)
-        elif self.cfg.vision_token_pooling_method == "max":
-            features, _ = features.max(dim=1, keepdim=True)
+        features_list = []
+        for img in [main_image, secondary_image]:
+            processed = self.preprocess(img)
+            processed_cuda = processed.to("cuda")
+            features = self.encode(processed_cuda)  # (batch_size, embed_len, hidden_dim)
+
+            features = (
+                features[self.cfg.vision_token_range[0] : self.cfg.vision_token_range[1]]
+                if self.cfg.vision_token_range
+                else features
+            )
+            if self.cfg.vision_token_pooling_method == "mean":
+                features = features.mean(dim=1, keepdim=True)
+            elif self.cfg.vision_token_pooling_method == "max":
+                features, _ = features.max(dim=1, keepdim=True)
+
+            features_list.append(features)
 
         if state is not None and self.state_proj is not None:
             state = self.normalize_state(state).to(x.device)
@@ -127,7 +134,9 @@ class MultiLayerDecoderWithMemory(nn.Module):
             state_features = rearrange(
                 state_features, "b (n s) -> b n s", n=self.cfg.num_state_tokens
             )
-            features = torch.cat([features, state_features], dim=1)
+            features = torch.cat([*features_list, state_features], dim=1)
+        else:
+            features = torch.cat(features_list, dim=1)
 
         for i in range(self.cfg.num_layers):
             layer = getattr(self, f"layer_{i}")
