@@ -80,9 +80,7 @@ class MultiLayerDecoderWithMemory(nn.Module):
                     (
                         torch.tensor(dataset_metadata[key][bound])
                         if dataset_metadata
-                        else torch.zeros(
-                            self.cfg.action_dim
-                        )
+                        else torch.zeros(self.cfg.action_dim)
                     ),
                 )
 
@@ -124,7 +122,7 @@ class MultiLayerDecoderWithMemory(nn.Module):
             features, _ = features.max(dim=1, keepdim=True)
 
         if state is not None and self.state_proj is not None:
-            state = self.normalize(state)
+            state = self.normalize_state(state).to(x.device)
             state_features = self.state_proj(state)
             state_features = rearrange(
                 state_features, "b (n s) -> b n s", n=self.cfg.num_state_tokens
@@ -283,8 +281,8 @@ class DecoderWithMemory(nn.Module):
 
     def forward(self, x):
         if self.cfg.enable_memory:
-             self.memory.update(x)
-             out_features = self.memory.retrieve(x)
+            self.memory.update(x)
+            out_features = self.memory.retrieve(x)
         else:
             out_features = x
 

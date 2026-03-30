@@ -480,7 +480,6 @@ def eval_mikasa(
                     tcp_pose = obs["extra"]["tcp_pose"].cpu().numpy()
                     joint_pos = obs["agent"]["qpos"].cpu().numpy()
                     joint_vel = obs["agent"]["qvel"].cpu().numpy()
-                    print(tcp_pose.shape, joint_pos.shape, joint_vel.shape)
                     state = np.concatenate([tcp_pose, joint_pos, joint_vel], axis=1)
                     state = torch.from_numpy(state).float().to("cuda")
                 else:
