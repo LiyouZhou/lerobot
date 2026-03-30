@@ -1,3 +1,4 @@
+from einops import rearrange
 import torch
 import torch.nn as nn
 from lerobot.policies.smolvla.memory.module import MemoryModule
@@ -44,6 +45,8 @@ class ViTMemoryConfig:
     memory_type: str = "titan"
     memory_num_slots: int = 10  # Only used if memory_type is "slot"
     pre_trained_weights: str = "/does/not/exist/weights.safetensors"
+    num_state_tokens: int = 16
+    proprioception: bool = False
 
 
 class MultiLayerDecoderWithMemory(nn.Module):
@@ -66,22 +69,27 @@ class MultiLayerDecoderWithMemory(nn.Module):
         )
 
         # constant value
-        self.register_buffer(
-            "action_min",
-            (
-                torch.tensor(dataset_metadata["action"]["min"])
-                if dataset_metadata
-                else torch.zeros(self.cfg.action_dim)
-            ),
-        )
-        self.register_buffer(
-            "action_max",
-            (
-                torch.tensor(dataset_metadata["action"]["max"])
-                if dataset_metadata
-                else torch.zeros(self.cfg.action_dim)
-            ),
-        )
+        for key in ("state", "action"):
+            for bound in ("min", "max"):
+                self.register_buffer(
+                    f"{key}_{bound}",
+                    (
+                        torch.tensor(dataset_metadata[key][bound])
+                        if dataset_metadata
+                        else torch.zeros(
+                            self.cfg.action_dim
+                        )
+                    ),
+                )
+
+        self.state_proj = (
+            nn.Linear(
+                len(dataset_metadata["state"]["max"]),
+                self.cfg.memory_size * self.cfg.num_state_tokens,
+            )
+            if dataset_metadata
+            else None
+        )  # state_dim -> memory_size
 
         self.model_initialised = False
 
@@ -91,7 +99,12 @@ class MultiLayerDecoderWithMemory(nn.Module):
     def encode(self, x):
         raise NotImplementedError("Subclasses should implement this method.")
 
-    def forward(self, x):
+    def forward(self, x, state=None):
+        if self.cfg.proprioception and state is None:
+            raise ValueError(
+                "Proprioception is enabled but no state input is provided."
+            )
+
         processed = self.preprocess(x)
         processed_cuda = processed.to("cuda")
         features = self.encode(processed_cuda)  # (batch_size, embed_len, hidden_dim)
@@ -105,6 +118,14 @@ class MultiLayerDecoderWithMemory(nn.Module):
             features = features.mean(dim=1, keepdim=True)
         elif self.cfg.vision_token_pooling_method == "max":
             features, _ = features.max(dim=1, keepdim=True)
+
+        if state is not None and self.state_proj is not None:
+            state = self.normalize(state)
+            state_features = self.state_proj(state)
+            state_features = rearrange(
+                state_features, "b (n s) -> b n s", n=self.cfg.num_state_tokens
+            )
+            features = torch.cat([features, state_features], dim=1)
 
         for i in range(self.cfg.num_layers):
             layer = getattr(self, f"layer_{i}")
@@ -162,6 +183,17 @@ class MultiLayerDecoderWithMemory(nn.Module):
         )
         return mse
 
+    def normalize_state(self, state):
+        state = state.cpu()
+        min_val = self.state_min.detach().clone().cpu()
+        max_val = self.state_max.detach().clone().cpu()
+
+        min_val = min_val[: state.shape[-1]]
+        max_val = max_val[: state.shape[-1]]
+        return (state - min_val.to(state.device)) / (
+            max_val.to(state.device) - min_val.to(state.device)
+        )
+
     def normalize(self, x):
         x = x.cpu()
         min_val = self.action_min.detach().clone().cpu()
@@ -188,9 +220,9 @@ class MultiLayerDecoderWithMemory(nn.Module):
     def get_action_cache(self):
         return self.action_cache
 
-    def select_action(self, x):
+    def select_action(self, x, state=None):
         if self.action_cache == []:
-            pred, _ = self.forward(x)
+            pred, _ = self.forward(x, state)
             pred = pred.view(-1, self.cfg.chunk_size, self.cfg.action_dim)
 
             if (self.action_min != 0.0).any():

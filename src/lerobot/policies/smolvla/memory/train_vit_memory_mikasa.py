@@ -221,12 +221,14 @@ def data_generator(
             euler_angles = Rotation.from_quat(quaternion).as_euler('xyz')
             final_state_array = np.concatenate([final_state_array[:, :3], euler_angles, gripper], axis=1)
             final_state_array = np.expand_dims(final_state_array, axis=1)
+            current_state_array = np.array([x[b if b < len(x) else -1]["state"].numpy() for x in observations])
             train_sample = {
                 "observations": torch.from_numpy(observations_array),
                 "actions": torch.from_numpy(
                     final_state_array if predict_final_pose else actions_array
                 ),
                 "frame_index": b,
+                "state": torch.from_numpy(current_state_array)
             }
             train_episode.append(train_sample)
 
@@ -336,7 +338,11 @@ def main(cfg: TrainingConfig):
                 imgs = rearrange(imgs, "b h w c -> b c h w")
                 imgs = torch.stack([transform(img) for img in imgs])
 
-            pred, out_features = model(imgs)
+            state = None
+            if cfg.model_config.proprioception:
+                state = data[frame_idx]["state"].float().to("cuda")
+
+            pred, out_features = model(imgs, state)
             loss_for_this_frame = model.compute_loss(pred, action)
 
             if data[frame_idx]["frame_index"] < cfg.action_start_index:

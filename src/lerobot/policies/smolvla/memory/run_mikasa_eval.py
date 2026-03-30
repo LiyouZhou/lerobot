@@ -295,7 +295,7 @@ def center_crop(image, batch_size=1, crop_scale=0.9, return_pil_image=False):
     return image
 
 
-def infer_batch(images, prompts, model):
+def infer_batch(images, prompts, model, state=None):
     """Infer a batch of samples."""
     batch_size = len(images)
     assert len(prompts) == batch_size, "Number of prompts must match number of images!"
@@ -307,7 +307,7 @@ def infer_batch(images, prompts, model):
     inputs["observation.images.image"] = images
     inputs["observation.state"] = torch.zeros((batch_size, 8), device=device)
     with torch.no_grad():
-        actions = model.select_action(images.float().cuda())
+        actions = model.select_action(images.float().cuda(), state=state)
 
     actions = actions.cpu().numpy()
     return actions
@@ -476,6 +476,16 @@ def eval_mikasa(
                 # Get observation image
                 images = obs["sensor_data"]["base_camera"]["rgb"]
 
+                if model.cfg.proprioception:
+                    tcp_pose = obs["extra"]["tcp_pose"].cpu().numpy()
+                    joint_pos = obs["agent"]["qpos"].cpu().numpy()
+                    joint_vel = obs["agent"]["qvel"].cpu().numpy()
+                    print(tcp_pose.shape, joint_pos.shape, joint_vel.shape)
+                    state = np.concatenate([tcp_pose, joint_pos, joint_vel], axis=1)
+                    state = torch.from_numpy(state).float().to("cuda")
+                else:
+                    state = None
+
                 images = torch.stack(
                     [
                         torch.Tensor(
@@ -506,7 +516,9 @@ def eval_mikasa(
 
                 if model_is_newly_loaded:
                     # run a inference to force initialisation of the memories
-                    infer_batch(images=images, prompts=prompts, model=model)
+                    infer_batch(
+                        images=images, prompts=prompts, model=model, state=state
+                    )
 
                     # reload the safetensors weights to fill the memory initialisation values
                     model.load(cfg.pretrained_checkpoint)
@@ -525,6 +537,7 @@ def eval_mikasa(
                         images=images,
                         prompts=prompts,
                         model=model,
+                        state=state,
                     )
                     actions = torch.from_numpy(actions)
                     actions = actions * cfg.model_action_scale
