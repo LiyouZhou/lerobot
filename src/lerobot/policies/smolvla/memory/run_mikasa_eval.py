@@ -496,7 +496,7 @@ def eval_mikasa(
                     img = np.concatenate([img, secondary_img], axis=-1)
                     img = torch.from_numpy(img).to(torch.uint8)
                     if cfg.center_crop_images:
-                        img = rearrange(img, "b h w c -> b c h w")
+                        img = rearrange(img, "b h w c -> 1 c h w")
                         img = T.functional.center_crop(
                             img,
                             [
