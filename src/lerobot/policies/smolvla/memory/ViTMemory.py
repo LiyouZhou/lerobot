@@ -47,6 +47,19 @@ class ViTMemoryConfig:
     pre_trained_weights: str = "/does/not/exist/weights.safetensors"
     num_state_tokens: int = 16
     proprioception: bool = False
+    pooling_method: str = "attention"  # "attention", "mean", "max", or None
+
+
+class AttentionPool(nn.Module):
+    def __init__(self, hidden_size):
+        super().__init__()
+        self.query = nn.Parameter(torch.randn(1, 1, hidden_size))
+        self.attn = nn.MultiheadAttention(hidden_size, num_heads=8, batch_first=True)
+
+    def forward(self, x):  # x: [batch, embed_len, hidden_size]
+        q = self.query.expand(x.size(0), -1, -1)  # [batch, 1, hidden_size]
+        out, _ = self.attn(q, x, x)
+        return out.squeeze(1)  # [batch, hidden_size]
 
 
 class MultiLayerDecoderWithMemory(nn.Module):
@@ -93,6 +106,9 @@ class MultiLayerDecoderWithMemory(nn.Module):
             else None
         )  # state_dim -> memory_size
 
+        if self.cfg.pooling_method == "attention":
+            self.attention_pool = AttentionPool(self.cfg.memory_size)
+
         self.model_initialised = False
 
     def preprocess(self, images):
@@ -107,17 +123,21 @@ class MultiLayerDecoderWithMemory(nn.Module):
                 "Proprioception is enabled but no state input is provided."
             )
 
-        main_image = x[:,:3]
-        secondary_image = x[:,3:6]
+        main_image = x[:, :3]
+        secondary_image = x[:, 3:6]
 
         features_list = []
         for img in [main_image, secondary_image]:
             processed = self.preprocess(img)
             processed_cuda = processed.to("cuda")
-            features = self.encode(processed_cuda)  # (batch_size, embed_len, hidden_dim)
+            features = self.encode(
+                processed_cuda
+            )  # (batch_size, embed_len, hidden_dim)
 
             features = (
-                features[self.cfg.vision_token_range[0] : self.cfg.vision_token_range[1]]
+                features[
+                    self.cfg.vision_token_range[0] : self.cfg.vision_token_range[1]
+                ]
                 if self.cfg.vision_token_range
                 else features
             )
@@ -142,9 +162,17 @@ class MultiLayerDecoderWithMemory(nn.Module):
             layer = getattr(self, f"layer_{i}")
             features = layer(features)
 
-        mean_out_features = features.mean(dim=1)
-        # print("mean_out_features.shape", mean_out_features.shape)
-        out = self.prediction_head(mean_out_features)
+        if self.cfg.pooling_method == "attention":
+            pooled_features = self.attention_pool(features)
+        elif self.cfg.pooling_method == "mean":
+            pooled_features = features.mean(dim=1)
+        elif self.cfg.pooling_method == "max":
+            pooled_features, _ = features.max(dim=1)
+        else:
+            pooled_features = features
+
+        # print("pooled_features.shape", pooled_features.shape)
+        out = self.prediction_head(pooled_features)
         # print("out.shape", out.shape)
 
         if not self.model_initialised and os.path.exists(self.cfg.pre_trained_weights):
@@ -155,7 +183,7 @@ class MultiLayerDecoderWithMemory(nn.Module):
             self.reset_action_cache()
             return self.forward(x)
 
-        return out, mean_out_features
+        return out, pooled_features
 
     def compute_loss(self, pred, gt):
         normalized_action = self.normalize(
