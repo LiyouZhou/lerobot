@@ -125,28 +125,34 @@ class MultiLayerDecoderWithMemory(nn.Module):
 
         main_image = x[:, :3]
         secondary_image = x[:, 3:6]
+        batch_size = x.shape[0]
 
-        features_list = []
-        for img in [main_image, secondary_image]:
-            processed = self.preprocess(img)
-            processed_cuda = processed.to("cuda")
-            features = self.encode(
-                processed_cuda
-            )  # (batch_size, embed_len, hidden_dim)
+        # concatinate main and secondary images along the batch dimension for joint processing
+        images = torch.cat(
+            [main_image, secondary_image], dim=0
+        )  # (2*batch_size, 3, H, W)
 
-            features = (
-                features[
-                    self.cfg.vision_token_range[0] : self.cfg.vision_token_range[1]
-                ]
-                if self.cfg.vision_token_range
-                else features
-            )
-            if self.cfg.vision_token_pooling_method == "mean":
-                features = features.mean(dim=1, keepdim=True)
-            elif self.cfg.vision_token_pooling_method == "max":
-                features, _ = features.max(dim=1, keepdim=True)
+        # Process and encode
+        processed = self.preprocess(images)
+        processed_cuda = processed.to("cuda")
+        features = self.encode(processed_cuda)  # (2*batch_size, embed_len, hidden_dim)
 
-            features_list.append(features)
+        # pool vision tokens if specified in config
+        features = (
+            features[self.cfg.vision_token_range[0] : self.cfg.vision_token_range[1]]
+            if self.cfg.vision_token_range
+            else features
+        )
+        if self.cfg.vision_token_pooling_method == "mean":
+            features = features.mean(dim=1, keepdim=True)
+        elif self.cfg.vision_token_pooling_method == "max":
+            features, _ = features.max(dim=1, keepdim=True)
+
+        # split back into two tensors
+        features_list = [
+            features[:batch_size],
+            features[batch_size:],
+        ]
 
         if state is not None and self.state_proj is not None:
             state = self.normalize_state(state).to(x.device)
