@@ -1,39 +1,25 @@
 import json
-import math
 import os
 from pathlib import Path
 from safetensors.torch import save_file
 
 import hydra
-import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
 import torch
-from einops import rearrange
 from hydra.core.config_store import ConfigStore
-from omegaconf import MISSING, OmegaConf
+from omegaconf import OmegaConf
 from PIL import Image
-from torch import nn
-from torch.utils.data import Dataset
-from torchvision import datasets
 from torchvision import transforms as T
-from torchvision.transforms import Resize, ToTensor
-from torchvision.transforms.functional import center_crop, resize
 from tqdm import tqdm, trange
 
 import wandb
-from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
-from lerobot.datasets.sampler import EpisodicBatchSampler
 from lerobot.policies.smolvla.memory.ViTMemory import (
     DINOv2wMemory,
-    ViTwMemory,
-    ViTMemoryConfig,
-    normalize,
-    unnormalize,
 )
+from lerobot.policies.smolvla.memory.image_utils import crop_resize
 from lerobot.policies.smolvla.memory.training_config import TrainingConfig
-from lerobot.utils.utils import print_cuda_memory_usage
 from datetime import datetime
 import secrets
 import string
@@ -324,6 +310,16 @@ def main(cfg: TrainingConfig):
         episode_loss = []
         mse_values = []
         loss_per_dim_values = []
+
+        # pick a random crop for the batch, and apply the same crop to all frames in that batch
+        offset_limit = int(
+            data[0]["observations"].shape[1]
+            * (1 - cfg.image_augmentation_crop_factor)
+            / 2
+        )
+        crop_offset_x = np.random.randint(-offset_limit, offset_limit)
+        crop_offset_y = np.random.randint(-offset_limit, offset_limit)
+
         for frame_idx in range(len(data)):
             if cfg.image_debug and i < 100:
                 os.makedirs("image_debug", exist_ok=True)
@@ -346,8 +342,12 @@ def main(cfg: TrainingConfig):
             action = data[frame_idx]["actions"].float()
 
             if cfg.image_augmentation:
-                imgs = rearrange(imgs, "b h w c -> b c h w")
-                imgs = torch.stack([transform(img) for img in imgs])
+                imgs = crop_resize(
+                    imgs,
+                    factor=cfg.image_augmentation_crop_factor,
+                    crop_offset_x=crop_offset_x,
+                    crop_offset_y=crop_offset_y,
+                )
 
             state = None
             if cfg.model_config.proprioception:
@@ -456,17 +456,11 @@ def main(cfg: TrainingConfig):
                         val_imgs = (
                             val_data[frame_idx]["observations"].float().to("cuda")
                         )
-                        val_imgs = rearrange(val_imgs, "b h w c -> b c h w")
-                        val_imgs = center_crop(
-                            val_imgs,
-                            [
-                                int(val_imgs.shape[-2] * 0.9),
-                                int(val_imgs.shape[-1] * 0.9),
-                            ],
-                        )
-                        val_imgs = resize(val_imgs, [128, 128])
-                        val_imgs = rearrange(val_imgs, "b c h w -> b h w c")
-
+                        if cfg.image_augmentation:
+                            val_imgs = crop_resize(
+                                val_imgs,
+                                factor=cfg.image_augmentation_crop_factor,
+                            )
                         val_action = val_data[frame_idx]["actions"].float()
 
                         state = (

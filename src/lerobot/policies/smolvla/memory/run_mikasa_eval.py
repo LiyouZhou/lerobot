@@ -1,15 +1,12 @@
 from collections import defaultdict
 from datetime import datetime
-import json
 import os
 import pickle
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, Union
-from xml.parsers.expat import model
 import draccus
-from einops import rearrange
 import torch
 from torchvision import transforms as T
 
@@ -26,6 +23,7 @@ from lerobot.policies.smolvla.memory.ViTMemory import DINOv2wMemory, ViTMemoryCo
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 from lerobot.policies.smolvla.modeling_smolvla import load_smolvla
 from lerobot.policies.smolvla.memory.training_config import TrainingConfig
+from lerobot.policies.smolvla.memory.image_utils import crop_resize
 
 # Append current directory so that interpreter can find experiments.robot
 sys.path.append("../..")
@@ -492,20 +490,13 @@ def eval_mikasa(
                     img = images[i]
                     secondary_img = secondary_images[i]
                     img = resize_image_for_policy(img.cpu().numpy(), 128)
-                    secondary_img = resize_image_for_policy(secondary_img.cpu().numpy(), 128)
+                    secondary_img = resize_image_for_policy(
+                        secondary_img.cpu().numpy(), 128
+                    )
                     img = np.concatenate([img, secondary_img], axis=-1)
                     img = torch.from_numpy(img).to(torch.uint8)
                     if cfg.center_crop_images:
-                        img = rearrange(img, "b h w c -> 1 c h w")
-                        img = T.functional.center_crop(
-                            img,
-                            [
-                                int(img.shape[-2] * 0.9),
-                                int(img.shape[-1] * 0.9),
-                            ],
-                        )
-                        img = T.functional.resize(img, [128, 128])
-                        img = rearrange(img, "b c h w -> b h w c")
+                        img = crop_resize(img, factor=0.9)
 
                     processed_images.append(img)
 
@@ -514,7 +505,7 @@ def eval_mikasa(
                 # Save preprocessed image for replay video
                 for i in range(num_envs):
                     # Add timestep text to top right of image
-                    img_pil = Image.fromarray(images[i][:,:,:3].cpu().numpy())
+                    img_pil = Image.fromarray(images[i][:, :, :3].cpu().numpy())
                     draw = ImageDraw.Draw(img_pil)
                     # Use default font
                     font = ImageFont.load_default()

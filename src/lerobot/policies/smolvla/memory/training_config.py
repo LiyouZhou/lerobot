@@ -30,6 +30,7 @@ class TrainingConfig:
 
     image_debug: bool = False
     image_augmentation: bool = False
+    image_augmentation_crop_factor: float = 0.9
     backprop_every_frame: bool = True
 
     predict_final_pose: bool = False
