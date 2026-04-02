@@ -48,6 +48,9 @@ class ViTMemoryConfig:
     num_state_tokens: int = 16
     proprioception: bool = False
     pooling_method: str = "attention"  # "attention", "mean", "max", or None
+    main_camera_only: bool = (
+        False  # If True, only use the main camera image and ignore the secondary camera
+    )
 
 
 class AttentionPool(nn.Module):
@@ -127,10 +130,13 @@ class MultiLayerDecoderWithMemory(nn.Module):
         secondary_image = x[:, 3:6]
         batch_size = x.shape[0]
 
-        # concatinate main and secondary images along the batch dimension for joint processing
-        images = torch.cat(
-            [main_image, secondary_image], dim=0
-        )  # (2*batch_size, 3, H, W)
+        if self.cfg.main_camera_only:
+            images = main_image
+        else:
+            # concatinate main and secondary images along the batch dimension for joint processing
+            images = torch.cat(
+                [main_image, secondary_image], dim=0
+            )  # (2*batch_size, 3, H, W)
 
         # Process and encode
         processed = self.preprocess(images)
@@ -149,10 +155,13 @@ class MultiLayerDecoderWithMemory(nn.Module):
             features, _ = features.max(dim=1, keepdim=True)
 
         # split back into two tensors
-        features_list = [
-            features[:batch_size],
-            features[batch_size:],
-        ]
+        if self.cfg.main_camera_only:
+            features_list = [features]
+        else:
+            features_list = [
+                features[:batch_size],
+                features[batch_size:],
+            ]
 
         if state is not None and self.state_proj is not None:
             state = self.normalize_state(state).to(x.device)
