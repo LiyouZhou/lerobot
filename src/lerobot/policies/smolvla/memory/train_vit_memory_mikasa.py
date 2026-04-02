@@ -514,6 +514,7 @@ def main(cfg: TrainingConfig):
                 log_rollout_videos=False,  # only log videos when saving checkpoints
                 reset_action_cache_every_step=True,
                 center_crop_images=cfg.image_augmentation,
+                crop_factor=cfg.image_augmentation_crop_factor,
                 final_pose_as_target=cfg.predict_final_pose,  # whether to reset the action cache at every step (only relevant when using action caching in Mikasa eval
             )
             eval_mikasa(

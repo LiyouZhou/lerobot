@@ -129,6 +129,7 @@ class GenerateConfig:
     log_performance_graphs: bool = True              # Whether to log model graphs to W&B
 
     center_crop_images: bool = False
+    crop_factor: float = 0.9
     final_pose_as_target: bool = False
     #################################################################################################################
     # fmt: on
@@ -496,7 +497,7 @@ def eval_mikasa(
                     img = np.concatenate([img, secondary_img], axis=-1)
                     img = torch.from_numpy(img).to(torch.uint8)
                     if cfg.center_crop_images:
-                        img = crop_resize(img, factor=0.9)
+                        img = crop_resize(img, factor=cfg.crop_factor)
 
                     processed_images.append(img)
 
