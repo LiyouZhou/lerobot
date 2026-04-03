@@ -317,9 +317,6 @@ def main(cfg: TrainingConfig):
             * (1 - cfg.image_augmentation_crop_factor)
             / 2
         )
-        crop_offset_x = np.random.randint(-offset_limit, offset_limit)
-        crop_offset_y = np.random.randint(-offset_limit, offset_limit)
-
         for frame_idx in range(len(data)):
             if cfg.image_debug and i < 100:
                 os.makedirs("image_debug", exist_ok=True)
@@ -342,6 +339,8 @@ def main(cfg: TrainingConfig):
             action = data[frame_idx]["actions"].float()
 
             if cfg.image_augmentation:
+                crop_offset_x = np.random.randint(-offset_limit, offset_limit)
+                crop_offset_y = np.random.randint(-offset_limit, offset_limit)
                 imgs = crop_resize(
                     imgs,
                     factor=cfg.image_augmentation_crop_factor,
