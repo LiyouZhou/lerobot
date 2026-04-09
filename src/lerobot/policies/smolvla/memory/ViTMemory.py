@@ -11,6 +11,7 @@ from transformers import AutoImageProcessor, AutoModel
 from safetensors.torch import load_file
 from dataclasses import dataclass, asdict
 import os
+from torchvision.transforms import v2
 
 
 def normalize(x, min_val, max_val):
@@ -506,6 +507,52 @@ class DINOv2wMemory(MultiLayerDecoderWithMemory):
     def encode(self, x):
         features = self.encoder(pixel_values=x)  # (batch_size, embed_len, hidden_dim)
         return features.last_hidden_state
+
+    def freeze_encoder(self):
+        self.encoder.eval()  # important for BN / dropout
+        for p in self.encoder.parameters():
+            p.requires_grad = False
+
+
+class EUPEwMemory(MultiLayerDecoderWithMemory):
+    def __init__(
+        self,
+        *args,
+        **kwargs,
+    ):
+        super(EUPEwMemory, self).__init__(*args, **kwargs)
+
+        REPO_DIR = "facebookresearch/eupe"
+        WEIGHTS_URL = (
+            "https://huggingface.co/facebook/EUPE-ViT-B/resolve/main/EUPE-ViT-B.pt"
+        )
+
+        # EUPE ViT models pretrained on web images
+        self.encoder = torch.hub.load(REPO_DIR, "eupe_vitb16", weights=WEIGHTS_URL)
+
+        def make_transform(resize_size: int = 256):
+            to_tensor = v2.ToImage()
+            resize = v2.Resize((resize_size, resize_size), antialias=True)
+            to_float = v2.ToDtype(torch.float32, scale=True)
+            normalize = v2.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
+            )
+            return v2.Compose([to_tensor, resize, to_float, normalize])
+
+        self.processor = make_transform()
+
+    def preprocess(self, images):
+        inputs = self.processor(images)
+        return inputs
+
+    def encode(self, x):
+        outputs = self.encoder.forward_features(x)
+        clstoken, patchtokens = (
+            outputs["x_norm_clstoken"],
+            outputs["x_norm_patchtokens"],
+        )
+        return torch.cat([clstoken.unsqueeze(1), patchtokens], dim=1)
 
     def freeze_encoder(self):
         self.encoder.eval()  # important for BN / dropout

@@ -16,7 +16,7 @@ from tqdm import tqdm, trange
 
 import wandb
 from lerobot.policies.smolvla.memory.ViTMemory import (
-    DINOv2wMemory,
+    EUPEwMemory,
 )
 from lerobot.policies.smolvla.memory.image_utils import crop_resize
 from lerobot.policies.smolvla.memory.training_config import TrainingConfig
@@ -281,7 +281,7 @@ def main(cfg: TrainingConfig):
         metadata["action"]["max"] = metadata["state"]["max"]
         metadata["action"]["min"] = metadata["state"]["min"]
 
-    model = DINOv2wMemory(
+    model = EUPEwMemory(
         cfg.model_config,
         dataset_metadata=metadata,
     )
