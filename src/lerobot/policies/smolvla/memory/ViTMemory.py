@@ -245,9 +245,12 @@ class MultiLayerDecoderWithMemory(nn.Module):
 
         min_val = min_val[: state.shape[-1]]
         max_val = max_val[: state.shape[-1]]
-        return (state - min_val.to(state.device)) / (
+
+        zero_to_one = (state - min_val.to(state.device)) / (
             max_val.to(state.device) - min_val.to(state.device)
         )
+        centred_to_zero = (zero_to_one - 0.5) * 2.0  # scale to [-1, 1]
+        return centred_to_zero
 
     def normalize(self, x):
         x = x.cpu()
@@ -256,9 +259,11 @@ class MultiLayerDecoderWithMemory(nn.Module):
 
         min_val = min_val[: x.shape[-1]]
         max_val = max_val[: x.shape[-1]]
-        return (x - min_val.to(x.device)) / (
+        zero_to_one = (x - min_val.to(x.device)) / (
             max_val.to(x.device) - min_val.to(x.device)
-        )
+        ) # scale to [0, 1]
+        centred_to_zero = (zero_to_one - 0.5) * 2.0  # scale to [-1, 1]
+        return centred_to_zero
 
     def unnormalize(self, x):
         x = x.cpu()
@@ -267,6 +272,8 @@ class MultiLayerDecoderWithMemory(nn.Module):
 
         min_val = min_val[: x.shape[-1]]
         max_val = max_val[: x.shape[-1]]
+
+        x = x / 2.0 + 0.5 # scale from [-1, 1] to [0, 1]
         return x * (max_val.to(x.device) - min_val.to(x.device)) + min_val.to(x.device)
 
     def reset_action_cache(self):
