@@ -68,6 +68,39 @@ class AttentionPool(nn.Module):
 
         return rearrange(out, "b n h -> b (n h)")
 
+class PredictionHead(nn.Module):
+    def __init__(self, config: ViTMemoryConfig):
+        super(PredictionHead, self).__init__()
+
+        self.input_projection = nn.Sequential(
+            nn.LazyLinear(config.memory_size * 2),
+            nn.ReLU()
+        )
+
+        num_fc_layers = 2
+        self.fc_layers = nn.ModuleList(
+            nn.LazyLinear(config.memory_size * 2) for _ in range(num_fc_layers)
+        )
+
+        self.output_projection = nn.Sequential(
+            nn.LayerNorm(config.memory_size * 2),
+            nn.LazyLinear(config.chunk_size * config.action_dim)
+        )
+
+    def forward(self, x):
+        if not hasattr(self, "layer_norm1"):
+            self.layer_norm1 = nn.LayerNorm(x.size(-1)).to(x.device)
+        
+        x = self.layer_norm1(x)
+        x = self.input_projection(x)
+
+        # resnet-style skip connections for fc layers
+        for fc in self.fc_layers:
+            x = x + fc(x)
+
+        out = self.output_projection(x)
+
+        return out
 
 class MultiLayerDecoderWithMemory(nn.Module):
     def __init__(
@@ -82,15 +115,7 @@ class MultiLayerDecoderWithMemory(nn.Module):
             layer = DecoderWithMemory(config)
             setattr(self, f"layer_{i}", layer)
 
-        self.prediction_head = nn.Sequential(
-            nn.LazyLinear(self.cfg.memory_size * 2),
-            nn.ReLU(),
-            nn.LazyLinear(self.cfg.memory_size * 2),
-            nn.ReLU(),
-            nn.LazyLinear(self.cfg.memory_size * 2),
-            nn.ReLU(),
-            nn.LazyLinear(self.cfg.chunk_size * self.cfg.action_dim),
-        )
+        self.prediction_head = PredictionHead(config)
 
         # constant value
         for key in ("state", "action"):
