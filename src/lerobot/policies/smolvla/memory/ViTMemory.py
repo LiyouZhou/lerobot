@@ -55,15 +55,18 @@ class ViTMemoryConfig:
 
 
 class AttentionPool(nn.Module):
-    def __init__(self, hidden_size):
+    def __init__(self, hidden_size, num_output_tokens=1):
         super().__init__()
-        self.query = nn.Parameter(torch.randn(1, 1, hidden_size))
+        self.query = nn.Parameter(torch.randn(1, num_output_tokens, hidden_size))
         self.attn = nn.MultiheadAttention(hidden_size, num_heads=8, batch_first=True)
 
     def forward(self, x):  # x: [batch, embed_len, hidden_size]
-        q = self.query.expand(x.size(0), -1, -1)  # [batch, 1, hidden_size]
+        q = self.query.expand(
+            x.size(0), -1, -1
+        )  # [batch, num_output_tokens, hidden_size]
         out, _ = self.attn(q, x, x)
-        return out.squeeze(1)  # [batch, hidden_size]
+
+        return rearrange(out, "b n h -> b (n h)")
 
 
 class MultiLayerDecoderWithMemory(nn.Module):
@@ -111,7 +114,7 @@ class MultiLayerDecoderWithMemory(nn.Module):
         )  # state_dim -> memory_size
 
         if self.cfg.pooling_method == "attention":
-            self.attention_pool = AttentionPool(self.cfg.memory_size)
+            self.attention_pool = AttentionPool(self.cfg.memory_size, 2)
 
         self.model_initialised = False
 
