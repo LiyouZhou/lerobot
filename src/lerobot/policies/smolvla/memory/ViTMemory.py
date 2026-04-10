@@ -334,6 +334,14 @@ class DecoderWithMemory(nn.Module):
         self.attn = nn.MultiheadAttention(
             embed_dim=hidden_dim, num_heads=num_heads, batch_first=True
         )
+        self.pre_attn_layer_norm = nn.LayerNorm(hidden_dim)
+        expansion_factor = 4
+        self.pre_ffn_layer_norm = nn.LayerNorm(hidden_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * expansion_factor),
+            nn.GELU(),
+            nn.Linear(hidden_dim * expansion_factor, hidden_dim),
+        )
 
     def forward(self, x):
         if self.cfg.enable_memory:
@@ -342,9 +350,15 @@ class DecoderWithMemory(nn.Module):
         else:
             out_features = x
 
-        transformer_out, _ = self.attn(out_features, out_features, out_features)
+        normalized_out_features = self.pre_attn_layer_norm(out_features)
+        transformer_out, _ = self.attn(
+            normalized_out_features, normalized_out_features, normalized_out_features
+        )
+        transformer_out += normalized_out_features
+        normed_transformer_out = self.pre_ffn_layer_norm(transformer_out)
+        output = normed_transformer_out + self.ffn(normed_transformer_out)
 
-        return transformer_out
+        return output
 
     def reset_memory(self):
         if self.cfg.enable_memory:
