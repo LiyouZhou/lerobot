@@ -288,11 +288,7 @@ class MultiLayerDecoderWithMemory(nn.Module):
             pred = pred.view(-1, self.cfg.chunk_size, self.cfg.action_dim)
 
             if (self.action_min != 0.0).any():
-                unnormalized_pred = unnormalize(
-                    pred.clone().detach().cpu(),
-                    self.action_min.detach().clone().cpu(),
-                    self.action_max.detach().clone().cpu(),
-                )
+                unnormalized_pred = self.unnormalize(pred.clone().detach().cpu())
             else:
                 unnormalized_pred = pred.clone().detach().cpu()
 
