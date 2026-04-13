@@ -19,7 +19,7 @@ import gymnasium as gym
 from mikasa_robo_suite.dataset_collectors.get_mikasa_robo_datasets import env_info
 
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
-from lerobot.policies.smolvla.memory.ViTMemory import DINOv2wMemory, ViTMemoryConfig
+from lerobot.policies.smolvla.memory.ViTMemory import EUPEwMemory, ViTMemoryConfig
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 from lerobot.policies.smolvla.modeling_smolvla import load_smolvla
 from lerobot.policies.smolvla.memory.training_config import TrainingConfig
@@ -84,7 +84,7 @@ def save_rollout_video(rollout_images, idx, success, task_description, log_file=
     mp4_path = f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
     rollout_images = torch.stack(rollout_images)
     # print("rollout_images", rollout_images.shape)
-    write_video(mp4_path, rollout_images, fps=30)
+    write_video(mp4_path, rollout_images, fps=10)
     # print(f"Saved rollout MP4 at path {mp4_path}")
     if log_file is not None:
         log_file.write(f"Saved rollout MP4 at path {mp4_path}\n")
@@ -326,12 +326,15 @@ def get_model(cfg):
 
 @draccus.wrap()
 def entry_point(cfg: GenerateConfig) -> None:
+    gpus = tf.config.list_physical_devices("GPU")
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
     eval_mikasa(cfg)
 
 
 def eval_mikasa(
     cfg: GenerateConfig,
-    model: DINOv2wMemory | None = None,
+    model: EUPEwMemory | None = None,
     skip_wandb_init: bool = False,
     training_step: int = 0,
 ) -> None:
@@ -353,7 +356,7 @@ def eval_mikasa(
             **training_cfg["model_config"],
         )
         print("model_cfg", model_cfg)
-        model = DINOv2wMemory(
+        model = EUPEwMemory(
             config=model_cfg,
         )
         model_is_newly_loaded = True
@@ -547,7 +550,7 @@ def eval_mikasa(
                     )
                     actions = torch.from_numpy(actions)
                     actions = actions * cfg.model_action_scale
-
+                    # actions[..., -1] = 1
                     if t < cfg.num_steps_no_action:
                         model.reset_action_cache()
                         actions = env.action_space.sample()

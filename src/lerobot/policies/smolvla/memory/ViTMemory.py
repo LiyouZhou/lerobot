@@ -34,6 +34,7 @@ class ViTMemoryConfig:
     enable_memory: bool = True
     n_action_steps: int = 5
     action_dim: int = 7
+    state_dim: int = 25
     chunk_size: int = 10
     vision_token_range: tuple[int, int] = (
         0,
@@ -125,17 +126,15 @@ class MultiLayerDecoderWithMemory(nn.Module):
                     (
                         torch.tensor(dataset_metadata[key][bound])
                         if dataset_metadata
-                        else torch.zeros(self.cfg.action_dim)
+                        else torch.zeros(self.cfg.action_dim if key == "action" else self.cfg.state_dim)
                     ),
                 )
 
         self.state_proj = (
             nn.Linear(
-                len(dataset_metadata["state"]["max"]),
+                self.cfg.state_dim,
                 self.cfg.memory_size * self.cfg.num_state_tokens,
-            )
-            if dataset_metadata
-            else None
+            ) if cfg.proprioception else None
         )  # state_dim -> memory_size
 
         if self.cfg.pooling_method == "attention":
