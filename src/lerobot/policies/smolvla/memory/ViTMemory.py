@@ -104,6 +104,36 @@ class PredictionHead(nn.Module):
         return out
 
 
+class InputFeatureProjection(nn.Module):
+    def __init__(self, config: ViTMemoryConfig):
+        super(InputFeatureProjection, self).__init__()
+        self.cfg = config
+        num_heads = 4
+        hidden_dim = self.cfg.memory_size
+        self.attn = nn.MultiheadAttention(
+            embed_dim=hidden_dim, num_heads=num_heads, batch_first=True
+        )
+        self.pre_attn_layer_norm = nn.LayerNorm(hidden_dim)
+        expansion_factor = 4
+        self.pre_ffn_layer_norm = nn.LayerNorm(hidden_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * expansion_factor),
+            nn.GELU(),
+            nn.Linear(hidden_dim * expansion_factor, hidden_dim),
+        )
+
+    def forward(self, features):
+        normalized_features = self.pre_attn_layer_norm(features)
+        attn_out, _ = self.attn(
+            normalized_features, normalized_features, normalized_features
+        )
+        attn_out += normalized_features
+        normed_attn_out = self.pre_ffn_layer_norm(attn_out)
+        features = normed_attn_out + self.ffn(normed_attn_out)
+
+        return features
+
+
 class MultiLayerDecoderWithMemory(nn.Module):
     def __init__(
         self,
@@ -117,6 +147,7 @@ class MultiLayerDecoderWithMemory(nn.Module):
             layer = DecoderWithMemory(config)
             setattr(self, f"layer_{i}", layer)
 
+        self.input_projection = InputFeatureProjection(config)
         self.prediction_head = PredictionHead(config)
 
         # constant value
@@ -161,15 +192,15 @@ class MultiLayerDecoderWithMemory(nn.Module):
                 "Proprioception is enabled but no state input is provided."
             )
 
-        main_image = x[:, :3]
-        secondary_image = x[:, 3:6]
         batch_size = x.shape[0]
 
         if features is None:
+            main_image = x[:, :3]
             if self.cfg.main_camera_only:
                 images = main_image
             else:
                 # concatinate main and secondary images along the batch dimension for joint processing
+                secondary_image = x[:, 3:6]
                 images = torch.cat(
                     [main_image, secondary_image], dim=0
                 )  # (2*batch_size, 3, H, W)
@@ -177,7 +208,9 @@ class MultiLayerDecoderWithMemory(nn.Module):
             # Process and encode
             processed = self.preprocess(images)
             processed_cuda = processed.to("cuda")
-            features = self.encode(processed_cuda)  # (2*batch_size, embed_len, hidden_dim)
+            features = self.encode(
+                processed_cuda
+            )  # (2*batch_size, embed_len, hidden_dim)
         else:
             if self.cfg.main_camera_only:
                 features = features[:batch_size]
@@ -211,6 +244,10 @@ class MultiLayerDecoderWithMemory(nn.Module):
             features = torch.cat([*features_list, state_features], dim=1)
         else:
             features = torch.cat(features_list, dim=1)
+
+        projected_features = self.input_projection(features)
+        pooled_features = projected_features.mean(dim=1, keepdim=True)
+        features = pooled_features
 
         for i in range(self.cfg.num_layers):
             layer = getattr(self, f"layer_{i}")
@@ -667,9 +704,10 @@ if __name__ == "__main__":
     enable_memory = True
     cfg = ViTMemoryConfig(
         enable_memory=enable_memory,
+        main_camera_only=True,
     )
 
-    model = DINOv2wMemory(config=cfg)
+    model = EUPEwMemory(config=cfg)
     model.to("cuda")
     model.train()
     model.encoder.eval()
@@ -725,8 +763,6 @@ if __name__ == "__main__":
             loss = nn.CrossEntropyLoss()(pred, gt.to("cuda"))
 
             loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
 
             # print("pred.shape", pred.shape)
             # print("pred", pred.argmax(dim=1))
@@ -760,3 +796,7 @@ if __name__ == "__main__":
             main_pbar.set_postfix(
                 {f"Loss:": f"{average_loss:.4f}", "Acc": f"{average_accuracy:.4f}"}
             )
+
+        # only update weights after each episode
+        optimizer.step()
+        optimizer.zero_grad()
