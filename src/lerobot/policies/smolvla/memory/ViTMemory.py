@@ -69,13 +69,13 @@ class AttentionPool(nn.Module):
 
         return rearrange(out, "b n h -> b (n h)")
 
+
 class PredictionHead(nn.Module):
     def __init__(self, config: ViTMemoryConfig):
         super(PredictionHead, self).__init__()
 
         self.input_projection = nn.Sequential(
-            nn.LazyLinear(config.memory_size * 2),
-            nn.ReLU()
+            nn.LazyLinear(config.memory_size * 2), nn.ReLU()
         )
 
         num_fc_layers = 2
@@ -85,13 +85,13 @@ class PredictionHead(nn.Module):
 
         self.output_projection = nn.Sequential(
             nn.LayerNorm(config.memory_size * 2),
-            nn.LazyLinear(config.chunk_size * config.action_dim)
+            nn.LazyLinear(config.chunk_size * config.action_dim),
         )
 
     def forward(self, x):
         if not hasattr(self, "layer_norm1"):
             self.layer_norm1 = nn.LayerNorm(x.size(-1)).to(x.device)
-        
+
         x = self.layer_norm1(x)
         x = self.input_projection(x)
 
@@ -102,6 +102,7 @@ class PredictionHead(nn.Module):
         out = self.output_projection(x)
 
         return out
+
 
 class MultiLayerDecoderWithMemory(nn.Module):
     def __init__(
@@ -126,7 +127,11 @@ class MultiLayerDecoderWithMemory(nn.Module):
                     (
                         torch.tensor(dataset_metadata[key][bound])
                         if dataset_metadata
-                        else torch.zeros(self.cfg.action_dim if key == "action" else self.cfg.state_dim)
+                        else torch.zeros(
+                            self.cfg.action_dim
+                            if key == "action"
+                            else self.cfg.state_dim
+                        )
                     ),
                 )
 
@@ -134,7 +139,9 @@ class MultiLayerDecoderWithMemory(nn.Module):
             nn.Linear(
                 self.cfg.state_dim,
                 self.cfg.memory_size * self.cfg.num_state_tokens,
-            ) if cfg.proprioception else None
+            )
+            if self.cfg.proprioception
+            else None
         )  # state_dim -> memory_size
 
         if self.cfg.pooling_method == "attention":
@@ -148,7 +155,7 @@ class MultiLayerDecoderWithMemory(nn.Module):
     def encode(self, x):
         raise NotImplementedError("Subclasses should implement this method.")
 
-    def forward(self, x, state=None):
+    def forward(self, x, state=None, features=None):
         if self.cfg.proprioception and state is None:
             raise ValueError(
                 "Proprioception is enabled but no state input is provided."
@@ -158,18 +165,22 @@ class MultiLayerDecoderWithMemory(nn.Module):
         secondary_image = x[:, 3:6]
         batch_size = x.shape[0]
 
-        if self.cfg.main_camera_only:
-            images = main_image
-        else:
-            # concatinate main and secondary images along the batch dimension for joint processing
-            images = torch.cat(
-                [main_image, secondary_image], dim=0
-            )  # (2*batch_size, 3, H, W)
+        if features is None:
+            if self.cfg.main_camera_only:
+                images = main_image
+            else:
+                # concatinate main and secondary images along the batch dimension for joint processing
+                images = torch.cat(
+                    [main_image, secondary_image], dim=0
+                )  # (2*batch_size, 3, H, W)
 
-        # Process and encode
-        processed = self.preprocess(images)
-        processed_cuda = processed.to("cuda")
-        features = self.encode(processed_cuda)  # (2*batch_size, embed_len, hidden_dim)
+            # Process and encode
+            processed = self.preprocess(images)
+            processed_cuda = processed.to("cuda")
+            features = self.encode(processed_cuda)  # (2*batch_size, embed_len, hidden_dim)
+        else:
+            if self.cfg.main_camera_only:
+                features = features[:batch_size]
 
         # pool vision tokens if specified in config
         features = (
@@ -288,7 +299,7 @@ class MultiLayerDecoderWithMemory(nn.Module):
         max_val = max_val[: x.shape[-1]]
         zero_to_one = (x - min_val.to(x.device)) / (
             max_val.to(x.device) - min_val.to(x.device)
-        ) # scale to [0, 1]
+        )  # scale to [0, 1]
         centred_to_zero = (zero_to_one - 0.5) * 2.0  # scale to [-1, 1]
         return centred_to_zero
 
@@ -300,7 +311,7 @@ class MultiLayerDecoderWithMemory(nn.Module):
         min_val = min_val[: x.shape[-1]]
         max_val = max_val[: x.shape[-1]]
 
-        x = x / 2.0 + 0.5 # scale from [-1, 1] to [0, 1]
+        x = x / 2.0 + 0.5  # scale from [-1, 1] to [0, 1]
         return x * (max_val.to(x.device) - min_val.to(x.device)) + min_val.to(x.device)
 
     def reset_action_cache(self):

@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+from einops import rearrange
 from safetensors.torch import save_file
 
 import hydra
@@ -204,6 +205,18 @@ def data_generator(
                     for x in observations
                 ]
             )
+            embeddings_array = np.array(
+                [
+                    np.stack(
+                        [
+                            x[b if b < len(x) else -1][f"{key}_embedding"].numpy()
+                            for key in image_key
+                        ],
+                        axis=0,
+                    )
+                    for x in observations
+                ]
+            )
             actions_array = np.array(sample_actions)
             final_action = np.array([x[-1].numpy() for x in actions])
             gripper = final_action[:, -1:]  # (batch_size, action_dim)
@@ -226,6 +239,7 @@ def data_generator(
                 ),
                 "frame_index": b,
                 "state": torch.from_numpy(current_state_array),
+                "embeddings": torch.from_numpy(embeddings_array),
             }
             train_episode.append(train_sample)
 
@@ -352,7 +366,10 @@ def main(cfg: TrainingConfig):
             if cfg.model_config.proprioception:
                 state = data[frame_idx]["state"].float().to("cuda")
 
-            pred, out_features = model(imgs, state)
+            embaddings = data[frame_idx]["embeddings"].float().to("cuda")
+            embeddings = rearrange(embaddings, "b n w h -> (b n) w h")
+
+            pred, out_features = model(imgs, state, features=embeddings)
             loss_for_this_frame = model.compute_loss(pred, action)
 
             if data[frame_idx]["frame_index"] < cfg.action_start_index:
