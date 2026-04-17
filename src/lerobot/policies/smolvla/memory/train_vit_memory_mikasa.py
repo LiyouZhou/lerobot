@@ -151,6 +151,7 @@ def data_generator(
                 obs = step["observation"]
                 action = step["action"]
                 observations[-1].append(obs)
+                action[-1] = 0.0  # ignore gripper action
                 actions[-1].append(action)
 
         def pad_to_chunk_size(traj, chunk_size):
