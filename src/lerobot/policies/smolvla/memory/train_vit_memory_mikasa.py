@@ -149,7 +149,7 @@ def data_generator(
             steps = episode["steps"]
             for step in steps:
                 obs = step["observation"]
-                action = step["action"]
+                action = step["action"].numpy()
                 observations[-1].append(obs)
                 action[-1] = 0.0  # ignore gripper action
                 actions[-1].append(action)
@@ -219,7 +219,7 @@ def data_generator(
                 ]
             )
             actions_array = np.array(sample_actions)
-            final_action = np.array([x[-1].numpy() for x in actions])
+            final_action = np.array([x[-1] for x in actions])
             gripper = final_action[:, -1:]  # (batch_size, action_dim)
             final_state_array = np.array(
                 [x[-1]["state"].numpy()[:7] for x in observations]
