@@ -41,3 +41,4 @@ class TrainingConfig:
     model_action_scale: float = 10.0
     num_envs: int = 10
     num_trials_per_task: int = 100
+    reset_action_cache_every_step: bool = True
