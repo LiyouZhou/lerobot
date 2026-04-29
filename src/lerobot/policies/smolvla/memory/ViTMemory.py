@@ -1,4 +1,4 @@
-from einops import rearrange
+from einops import rearrange, repeat
 import torch
 import torch.nn as nn
 from lerobot.policies.smolvla.memory.module import MemoryModule
@@ -12,6 +12,7 @@ from safetensors.torch import load_file
 from dataclasses import dataclass, asdict
 import os
 from torchvision.transforms import v2
+from scipy.spatial.transform import Rotation as R
 
 
 def normalize(x, min_val, max_val):
@@ -309,7 +310,7 @@ class MultiLayerDecoderWithMemory(nn.Module):
         masked_unnormalized_pred = unnormalized_pred * mask.unsqueeze(-1).float()
 
         mse = nn.MSELoss(reduction="mean")(
-            masked_unnormalized_pred, gt[:, :, : self.cfg.action_dim]
+            masked_unnormalized_pred.to(gt.device), gt[:, :, : self.cfg.action_dim]
         )
         return mse
 
@@ -357,7 +358,7 @@ class MultiLayerDecoderWithMemory(nn.Module):
     def get_action_cache(self):
         return self.action_cache
 
-    def select_action(self, x, state=None):
+    def select_action(self, x, state=None, world_frame=False):
         if self.action_cache == []:
             pred, _ = self.forward(x, state)
             pred = pred.view(-1, self.cfg.chunk_size, self.cfg.action_dim)
@@ -366,6 +367,33 @@ class MultiLayerDecoderWithMemory(nn.Module):
                 unnormalized_pred = self.unnormalize(pred.clone().detach().cpu())
             else:
                 unnormalized_pred = pred.clone().detach().cpu()
+
+            if world_frame and state is not None:
+                if isinstance(state, torch.Tensor):
+                    state = state.cpu().numpy()
+
+                state = repeat(state, "b c -> b n c", n=self.cfg.chunk_size)
+
+                unnormalized_pred[:, :, :3] += state[:, :, :3]
+                unnormalized_pred_euler_angles = rearrange(
+                    unnormalized_pred[:, :, 3:6], "b n c -> (b n) c"
+                ).numpy()
+                state_euler_angles = rearrange(
+                    state[:, :, 3:6], "b n c -> (b n) c"
+                )
+                pred_rot = R.from_euler("XYZ", unnormalized_pred_euler_angles)
+                state_rot = R.from_euler("XYZ", state_euler_angles)
+                world_frame_rot = state_rot * pred_rot
+                world_frame_euler_angles = torch.from_numpy(
+                    world_frame_rot.as_euler("XYZ")
+                ).to(unnormalized_pred.device)
+                world_frame_euler_angles = rearrange(
+                    world_frame_euler_angles,
+                    "(b n) c -> b n c",
+                    b=unnormalized_pred.shape[0],
+                    n=self.cfg.chunk_size,
+                )
+                unnormalized_pred[:, :, 3:6] = world_frame_euler_angles
 
             for i in range(self.cfg.chunk_size):
                 self.action_cache.append(unnormalized_pred[:, i, :])

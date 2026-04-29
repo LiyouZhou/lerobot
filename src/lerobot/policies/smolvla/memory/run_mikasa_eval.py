@@ -9,6 +9,7 @@ from typing import Optional, Tuple, Union
 import draccus
 import torch
 from torchvision import transforms as T
+from scipy.spatial.transform import Rotation
 
 from omegaconf import OmegaConf
 import numpy as np
@@ -131,6 +132,7 @@ class GenerateConfig:
     center_crop_images: bool = False
     crop_factor: float = 0.9
     final_pose_as_target: bool = False
+    predict_relative_states: bool = False
     #################################################################################################################
     # fmt: on
 
@@ -295,7 +297,7 @@ def center_crop(image, batch_size=1, crop_scale=0.9, return_pil_image=False):
     return image
 
 
-def infer_batch(images, prompts, model, state=None):
+def infer_batch(images, prompts, model, state=None, world_frame=False):
     """Infer a batch of samples."""
     batch_size = len(images)
     assert len(prompts) == batch_size, "Number of prompts must match number of images!"
@@ -307,7 +309,9 @@ def infer_batch(images, prompts, model, state=None):
     inputs["observation.images.image"] = images
     inputs["observation.state"] = torch.zeros((batch_size, 8), device=device)
     with torch.no_grad():
-        actions = model.select_action(images.float().cuda(), state=state)
+        actions = model.select_action(
+            images.float().cuda(), state=state, world_frame=world_frame
+        )
 
     actions = actions.cpu().numpy()
     return actions
@@ -322,6 +326,25 @@ def get_model(cfg):
         cfg.pretrained_checkpoint, dataset_stats=ds_meta.stats
     )
     return policy
+
+
+def get_state(obs):
+    tcp_pose = obs["extra"]["tcp_pose"].cpu().numpy()
+    qant = tcp_pose[:, 3:7]
+    euler_angles = Rotation.from_quat(qant, scalar_first=True).as_euler("XYZ")
+    tcp_pose[:, 3:6] = euler_angles
+    tcp_pose[:, 6] = 0
+    return tcp_pose
+
+
+def state_to_action(state, base_p, base_rot):
+    xyz_in_world_frame = state[:, :3] - base_p
+    rot_in_robot_frame = Rotation.from_quat(state[:, 3:], scalar_first=True)
+    rot_in_world_frame = base_rot.inv() * rot_in_robot_frame
+    rpy = rot_in_world_frame.as_euler("XYZ")
+    return np.concatenate(
+        [xyz_in_world_frame, rpy, np.zeros((state.shape[0], 1))], axis=-1
+    )
 
 
 @draccus.wrap()
@@ -405,19 +428,25 @@ def eval_mikasa(
             num_envs=num_envs,
             obs_mode="rgb",
             control_mode=(
-                "pd_ee_pose" if cfg.final_pose_as_target else "pd_ee_delta_pose"
+                "pd_ee_pose"
+                if (cfg.final_pose_as_target or cfg.predict_relative_states)
+                else "pd_ee_delta_pose"
             ),
             render_mode="all",
             sim_backend="gpu",
             reward_mode="normalized_dense",
         )
-        unnorm_key = ""  # Action un-normalization key for OpenVLA
 
         env = gym.make(env_name, **env_kwargs_rgb)
         state_wrappers_list, episode_timeout = env_info(env_name)
         print(f"Episode timeout: {episode_timeout}")
         for wrapper_class, wrapper_kwargs in state_wrappers_list:
             env = wrapper_class(env, **wrapper_kwargs)
+
+        base_p = env.unwrapped.agent.robot.pose.p.cpu().numpy()[0]
+        base_q = env.unwrapped.agent.robot.pose.q.cpu().numpy()[0]
+        base_rot = Rotation.from_quat(base_q, scalar_first=True)
+        print("base_rot.as_euler('XYZ'):", base_rot.as_euler("XYZ"))
 
         # Start episodes
         task_episodes, task_successes = 0, 0
@@ -481,11 +510,7 @@ def eval_mikasa(
                 secondary_images = obs["sensor_data"]["hand_camera"]["rgb"]
 
                 if model.cfg.proprioception:
-                    tcp_pose = obs["extra"]["tcp_pose"].cpu().numpy()
-                    joint_pos = obs["agent"]["qpos"].cpu().numpy()
-                    joint_vel = obs["agent"]["qvel"].cpu().numpy()
-                    state = np.concatenate([tcp_pose, joint_pos, joint_vel], axis=1)
-                    state = torch.from_numpy(state).float().to("cuda")
+                    state = torch.from_numpy(get_state(obs)).float().to("cuda")
                 else:
                     state = None
 
@@ -547,6 +572,7 @@ def eval_mikasa(
                         prompts=prompts,
                         model=model,
                         state=state,
+                        world_frame=(env_kwargs_rgb["control_mode"] == "pd_ee_pose"),
                     )
                     actions = torch.from_numpy(actions)
                     actions = actions * cfg.model_action_scale
@@ -556,7 +582,24 @@ def eval_mikasa(
                         actions = env.action_space.sample()
                         actions = np.zeros(actions.shape)
 
-                obs, reward, terminated, truncated, info = env.step(actions)
+                if env_kwargs_rgb["control_mode"] == "pd_ee_pose":
+                    inner_loop_count = 0
+                    while (
+                        not np.allclose(
+                            actions,
+                            state_to_action(
+                                obs["extra"]["tcp_pose"].cpu().numpy(),
+                                base_p,
+                                base_rot,
+                            ),
+                            atol=1e-4,
+                        )
+                        and inner_loop_count < 5
+                    ):
+                        obs, reward, terminated, truncated, info = env.step(actions)
+                        inner_loop_count += 1
+                else:
+                    obs, reward, terminated, truncated, info = env.step(actions)
 
                 robot_state = obs["extra"]["tcp_pose"].cpu().numpy()
                 action_state_log.append((actions, robot_state))
