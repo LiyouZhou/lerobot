@@ -34,6 +34,7 @@ class TrainingConfig:
     backprop_every_frame: bool = True
 
     predict_final_pose: bool = False
+    predict_relative_states: bool = True
 
     # eval
     eval_steps: int = 1000

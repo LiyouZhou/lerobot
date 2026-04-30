@@ -219,20 +219,60 @@ def data_generator(
                 ]
             )
             actions_array = np.array(sample_actions)
-            final_action = np.array([x[-1] for x in actions])
-            gripper = final_action[:, -1:]  # (batch_size, action_dim)
-            final_state_array = np.array(
-                [x[-1]["state"].numpy()[:7] for x in observations]
+
+            def form_cononical_state(idx):
+                # ignore gripper for now
+                gripper = np.array([[0] for x in observations])
+                state_array = np.array(
+                    [
+                        x[idx if idx < len(x) else -1]["state"].numpy()
+                        for x in observations
+                    ]
+                )
+                quaternion = state_array[:, 3:7]
+                euler_angles = Rotation.from_quat(
+                    quaternion, scalar_first=True
+                ).as_euler("XYZ")
+                state_array = np.concatenate(
+                    [state_array[:, :3], euler_angles, gripper], axis=1
+                )
+                state_array = np.expand_dims(state_array, axis=1)
+                return state_array
+
+            # calculate the final state of the episode
+            final_state_array = form_cononical_state(-1)
+
+            # extract the current state
+            current_state_array = form_cononical_state(b).squeeze(1)
+
+            # Extract the next few states as delta to the current state, and use that as the target to predict
+            def state_diff(current_state, next_state):
+                if current_state.ndim == 3 and current_state.shape[1] == 1:
+                    current_state = current_state.squeeze(1)
+                if next_state.ndim == 3 and next_state.shape[1] == 1:
+                    next_state = next_state.squeeze(1)
+
+                # position difference
+                pos_diff = next_state[:, :3] - current_state[:, :3]
+
+                # rotation difference (in euler angles)
+                current_rot = Rotation.from_euler("XYZ", current_state[:, 3:6])
+                next_rot = Rotation.from_euler("XYZ", next_state[:, 3:6])
+                rot_diff = (next_rot * current_rot.inv()).as_euler("XYZ")
+
+                # concatenate position and rotation differences
+                gripper = np.array([[0] for _ in observations])
+                diff = np.concatenate([pos_diff, rot_diff, gripper], axis=1)
+
+                return diff
+
+            next_states_array = np.array(
+                [
+                    state_diff(current_state_array, form_cononical_state(b + i))
+                    for i in range(chunk_size)
+                ]
             )
-            quaternion = final_state_array[:, 3:]
-            euler_angles = Rotation.from_quat(quaternion).as_euler("xyz")
-            final_state_array = np.concatenate(
-                [final_state_array[:, :3], euler_angles, gripper], axis=1
-            )
-            final_state_array = np.expand_dims(final_state_array, axis=1)
-            current_state_array = np.array(
-                [x[b if b < len(x) else -1]["state"].numpy() for x in observations]
-            )
+
             train_sample = {
                 "observations": torch.from_numpy(observations_array),
                 "actions": torch.from_numpy(
@@ -241,6 +281,9 @@ def data_generator(
                 "frame_index": b,
                 "state": torch.from_numpy(current_state_array),
                 "embeddings": torch.from_numpy(embeddings_array),
+                "next_states": rearrange(
+                    torch.from_numpy(next_states_array), "c b d -> b c d"
+                ),
             }
             train_episode.append(train_sample)
 
@@ -274,6 +317,10 @@ def main(cfg: TrainingConfig):
     ds, val_ds, metadata = load_dataset(
         cfg.ds_name, cfg.data_dir, cfg.model_config.action_dim
     )
+    if cfg.predict_relative_states:
+        # need to estimate the bounds during training
+        metadata["action"]["max"] = np.ones_like(metadata["action"]["max"]) * -np.inf
+        metadata["action"]["min"] = np.ones_like(metadata["action"]["min"]) * np.inf
     print("Dataset statistics:", metadata)
 
     val_ds = val_ds.shuffle(50).repeat().prefetch(cfg.batch_size * 2)  # infinite stream
@@ -369,6 +416,18 @@ def main(cfg: TrainingConfig):
 
             embaddings = data[frame_idx]["embeddings"].float().to("cuda")
             embeddings = rearrange(embaddings, "b n w h -> (b n) w h")
+
+            if cfg.predict_relative_states:
+                action = data[frame_idx]["next_states"].float().to("cuda")
+                rearranged_action = rearrange(
+                    action[:, :, : cfg.model_config.action_dim], "b c d -> (b c) d"
+                )
+                model.action_min = torch.min(
+                    model.action_min, rearranged_action.min(dim=0).values
+                )
+                model.action_max = torch.max(
+                    model.action_max, rearranged_action.max(dim=0).values
+                )
 
             pred, out_features = model(imgs, state, features=embeddings)
             loss_for_this_frame = model.compute_loss(pred, action)
@@ -487,8 +546,20 @@ def main(cfg: TrainingConfig):
                         )
 
                         val_pred, _ = model(val_imgs, state=state)
-                        val_loss = model.compute_loss(val_pred, val_action)
-                        val_mse = model.compute_mse(val_pred, val_action)
+                        if cfg.predict_relative_states:
+                            val_action = (
+                                val_data[frame_idx]["next_states"].float().to("cuda")
+                            )
+                            val_loss = model.compute_loss(
+                                val_pred, val_action, normalize_actions=False
+                            )
+                        else:
+                            val_loss = model.compute_loss(val_pred, val_action)
+                        val_mse = model.compute_mse(
+                            val_pred,
+                            val_action,
+                            unnormalize_actions=(not cfg.predict_relative_states),
+                        )
 
                         val_losses.append(val_loss.item())
                         val_mses.append(val_mse.item())
@@ -532,7 +603,8 @@ def main(cfg: TrainingConfig):
                 reset_action_cache_every_step=cfg.reset_action_cache_every_step,
                 center_crop_images=cfg.image_augmentation,
                 crop_factor=cfg.image_augmentation_crop_factor,
-                final_pose_as_target=cfg.predict_final_pose,  # whether to reset the action cache at every step (only relevant when using action caching in Mikasa eval
+                final_pose_as_target=cfg.predict_final_pose,
+                predict_relative_states=cfg.predict_relative_states,
             )
             eval_mikasa(
                 cfg=eval_cfg,
