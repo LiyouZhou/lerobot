@@ -373,9 +373,6 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
     if cfg.resume:
         step, optimizer, lr_scheduler = load_training_state(cfg.checkpoint_path, optimizer, lr_scheduler)
 
-    num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
-    num_total_params = sum(p.numel() for p in policy.parameters())
-
     if is_main_process:
         logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
         if cfg.env is not None:
@@ -390,8 +387,6 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
         num_processes = accelerator.num_processes
         effective_bs = cfg.batch_size * num_processes
         logging.info(f"Effective batch size: {cfg.batch_size} x {num_processes} = {effective_bs}")
-        logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
-        logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
     # create dataloader for offline training
     if not cfg.dataset.streaming:
@@ -507,6 +502,7 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
             f"Start offline training on a fixed dataset, with effective batch size: {effective_batch_size}"
         )
 
+    model_initialized = False  # flag to indicate whether the model has done a forward pass (used for lazy initialization in some models)
     for _ in range(step, cfg.steps):
         start_time = time.perf_counter()
         batch = next(dl_iter)
@@ -526,6 +522,13 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
             lr_scheduler=lr_scheduler,
             sample_weighter=sample_weighter,
         )
+        if not model_initialized and is_main_process:
+                logging.info(colored("Model initialized!", "green", attrs=["bold"]))
+                num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
+                num_total_params = sum(p.numel() for p in policy.parameters())
+                logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
+                logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
+                model_initialized = True
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
@@ -585,6 +588,7 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
                 step_id = get_step_identifier(step, cfg.steps)
                 logging.info(f"Eval policy at step {step}")
                 with torch.no_grad(), accelerator.autocast():
+                    eval_env = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs)
                     eval_info = eval_policy_all(
                         envs=eval_env,  # dict[suite][task_id] -> vec_env
                         policy=accelerator.unwrap_model(policy),

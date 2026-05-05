@@ -150,6 +150,10 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from .wall_x.modeling_wall_x import WallXPolicy
 
         return WallXPolicy
+    elif name == "vitmem":
+        from .vitmem.ViTMemory import EUPEwMemory
+
+        return EUPEwMemory
     elif name == "eo1":
         from .eo1.modeling_eo1 import EO1Policy
 

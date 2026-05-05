@@ -182,8 +182,8 @@ def rollout(
         observation = env_preprocessor(observation)
 
         observation = preprocessor(observation)
-        with torch.inference_mode():
-            action = policy.select_action(observation)
+        # with torch.inference_mode():
+        action = policy.select_action(observation)
         action = postprocessor(action)
 
         action_transition = {ACTION: action}
@@ -305,6 +305,7 @@ def eval_policy(
 
     start = time.time()
     policy.eval()
+    policy.reset()
 
     # Determine how many batched rollouts we need to get n_episodes. Note that if n_episodes is not evenly
     # divisible by env.num_envs we end up discarding some data in the last batch.
