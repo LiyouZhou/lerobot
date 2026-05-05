@@ -16,6 +16,7 @@ from dataclasses import dataclass, asdict
 import os
 from torchvision.transforms import v2
 from scipy.spatial.transform import Rotation as R
+from sentence_transformers import SentenceTransformer
 
 
 def normalize(x, min_val, max_val):
@@ -199,7 +200,12 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
 
             # Training mode: compute loss and return (scalar_loss, info_dict)
             if "action" in input_dict and input_dict["action"] is not None:
-                out, pooled_features = self._forward_core(x, state, features)
+                out, pooled_features = self._forward_core(
+                    x,
+                    state,
+                    features,
+                    language_instruction=input_dict.get("task", None),
+                )
                 gt_action = input_dict["action"]
                 loss = self.compute_loss(out, gt_action, normalize_gt=False)
                 return loss, {"l1_loss": loss.item()}
@@ -209,9 +215,9 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
                 "Proprioception is enabled but no state input is provided."
             )
 
-        return self._forward_core(x, state, features)
+        return self._forward_core(x, state, features, language_instruction=None)
 
-    def _forward_core(self, x, state=None, features=None):
+    def _forward_core(self, x, state=None, features=None, language_instruction=None):
         if self.cfg.proprioception and state is None:
             raise ValueError(
                 "Proprioception is enabled but no state input is provided."
@@ -260,6 +266,15 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
                 features[batch_size:],
             ]
 
+        if language_instruction is not None:
+            instruction_features = self.encode_task_instruction(
+                language_instruction
+            )
+            instruction_features = rearrange(
+                instruction_features, "b s -> b 1 s"
+            )  # (batch_size, 1, hidden_dim)
+            features_list.append(instruction_features)
+
         if state is not None and self.state_proj is not None:
             # state = self.normalize_state(state).to(x.device)
             state = state.to(x.device)
@@ -267,9 +282,9 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
             state_features = rearrange(
                 state_features, "b (n s) -> b n s", n=self.cfg.num_state_tokens
             )
-            features = torch.cat([*features_list, state_features], dim=1)
-        else:
-            features = torch.cat(features_list, dim=1)
+            features_list.append(state_features)
+
+        features = torch.cat(features_list, dim=1)
 
         projected_features = self.input_projection(features)
         pooled_features = projected_features.mean(dim=1, keepdim=True)
@@ -682,6 +697,11 @@ class EUPEwMemory(MultiLayerDecoderWithMemory):
         # EUPE ViT models pretrained on web images
         self.encoder = torch.hub.load(REPO_DIR, "eupe_vitb16", weights=WEIGHTS_URL)
 
+        self.sentence_transsformer = SentenceTransformer(
+            "sentence-transformers/all-MiniLM-L6-v2"
+        )
+        self.sentence_embedding_proj = nn.Linear(384, self.cfg.memory_size)
+
         def make_transform(resize_size: int = 256):
             to_tensor = v2.ToImage()
             resize = v2.Resize((resize_size, resize_size), antialias=True)
@@ -699,11 +719,14 @@ class EUPEwMemory(MultiLayerDecoderWithMemory):
         return inputs
 
     def encode(self, x):
-        outputs = self.encoder.forward_features(x)
+        with torch.inference_mode():
+            outputs = self.encoder.forward_features(x)
+
         clstoken, patchtokens = (
-            outputs["x_norm_clstoken"],
-            outputs["x_norm_patchtokens"],
+            outputs["x_norm_clstoken"].detach().clone().to(x.device),
+            outputs["x_norm_patchtokens"].detach().clone().to(x.device),
         )
+
         return torch.cat([clstoken.unsqueeze(1), patchtokens], dim=1)
 
     def freeze_encoder(self):
@@ -714,8 +737,26 @@ class EUPEwMemory(MultiLayerDecoderWithMemory):
     def train(self, mode=True):
         super().train(mode)
         self.freeze_encoder()
+        self.sentence_transsformer.eval()
+        for p in self.sentence_transsformer.parameters():
+            p.requires_grad = False
 
         return self
+
+    def encode_task_instruction(self, instruction_sentences):
+        with torch.inference_mode():
+            embeddings = self.sentence_transsformer.encode(
+                instruction_sentences,
+                output_value="sentence_embedding",
+                convert_to_tensor=True,
+            )
+        # SentenceTransformer may return inference-mode tensors; detach+clone makes a normal tensor.
+        embeddings = embeddings.detach().clone().to(
+            self.sentence_embedding_proj.weight.device
+        )
+        features = self.sentence_embedding_proj(embeddings)
+
+        return features
 
 
 class ViTwMemory(VisionEncoderWithMemory):
