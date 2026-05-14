@@ -45,7 +45,7 @@ from lerobot.common.train_utils import (
 from lerobot.common.wandb_utils import WandBLogger
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
-from lerobot.datasets import EpisodeAwareSampler, compute_sampler_state, make_dataset
+from lerobot.datasets import EpisodeAwareSampler, compute_sampler_state, make_dataset, EpisodicBatchSampler
 from lerobot.envs import close_envs, make_env, make_env_pre_post_processors
 from lerobot.optim.factory import make_optimizer_and_scheduler
 from lerobot.policies import PreTrainedPolicy, make_policy, make_pre_post_processors
@@ -430,9 +430,20 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
                     f"Resuming data order at epoch {sampler_state['epoch']}, "
                     f"sample {sampler_state['start_index']}"
                 )
+        batch_sampler = None
+    elif cfg.dataset.episodic:
+        shuffle = False
+        batch_sampler = EpisodicBatchSampler(
+            batch_size=cfg.batch_size,
+            shuffle=shuffle,
+            episode_start_indices=dataset.meta.episodes["dataset_from_index"],
+            episode_end_indices=dataset.meta.episodes["dataset_to_index"],
+        )
+        sampler = None
     else:
         shuffle = True
         sampler = None
+        batch_sampler = None
 
     # Only swap in the language-aware collate when the dataset actually
     # declares language columns; otherwise stay on PyTorch's default
@@ -441,9 +452,12 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
     dataloader = torch.utils.data.DataLoader(
         dataset,
         num_workers=cfg.num_workers,
-        batch_size=cfg.batch_size,
+        batch_size=(
+            cfg.batch_size if not batch_sampler else 1
+        ),  # batch_sampler will handle batching for episodic case
         shuffle=shuffle and not cfg.dataset.streaming,
         sampler=sampler,
+        batch_sampler=batch_sampler,
         pin_memory=device.type == "cuda",
         drop_last=False,
         collate_fn=collate_fn,
@@ -509,8 +523,11 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
         for cam_key in dataset.meta.camera_keys:
             if cam_key in batch and batch[cam_key].dtype == torch.uint8:
                 batch[cam_key] = batch[cam_key].to(dtype=torch.float32) / 255.0
+
+        frame_indices = batch["frame_index"]
         batch = preprocessor(batch)
         train_tracker.dataloading_s = time.perf_counter() - start_time
+        batch["frame_index"] = frame_indices
 
         train_tracker, output_dict = update_policy(
             train_tracker,

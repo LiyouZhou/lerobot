@@ -40,6 +40,9 @@ class DatasetConfig:
     return_uint8: bool = False
     streaming: bool = False
 
+    # whether to train in an episodic manner, i.e. sampling batches of consecutive frames from the same episodes.
+    episodic: bool = False
+
     def __post_init__(self) -> None:
         if self.episodes is not None:
             if any(ep < 0 for ep in self.episodes):

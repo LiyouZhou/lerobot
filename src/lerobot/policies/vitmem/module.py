@@ -83,23 +83,51 @@ class MLPMemory(nn.Module):
         self.fc0.requires_grad = True
         self.fc1.requires_grad = True
 
-    def reset_memory(self):
+    def reset_memory(self, mask=None):
         if not hasattr(self, "_saved_weights"):
             # let the first inference call create the weights
             print("memory not initialized yet, skip reset_memory")
             return
 
-        # put the weights back to the initial state
-        self.fc0 = repeat(
-            self._saved_weights[0].clone().detach(), "... -> b ...", b=self.B
-        )
-        self.fc1 = repeat(
-            self._saved_weights[1].clone().detach(), "... -> b ...", b=self.B
-        )
-        self.fc0.requires_grad = True
-        self.fc1.requires_grad = True
+        # mask is a tensor of shape [B] with boolean values,
+        # indicating which slot in the batch should be reset
+        if mask is None or mask.shape[0] != self.fc0.shape[0]:
+            self.fc0 = repeat(
+                self._saved_weights[0].clone().detach(), "... -> b ...", b=self.B
+            )
+            self.fc1 = repeat(
+                self._saved_weights[1].clone().detach(), "... -> b ...", b=self.B
+            )
+        else:
+            mask = mask.to(device=self.device)
+            if mask.shape[0] != self.B:
+                raise ValueError(
+                    f"Mask shape {mask.shape} does not match batch size {self.B}"
+                )
+            mask = rearrange(mask, "b -> b 1 1")  # [B, 1, 1]
 
-        self.reset_past_surprise()
+            # put the weights back to the initial state
+            self.fc0 = torch.where(
+                mask,
+                repeat(
+                    self._saved_weights[0].clone().detach(), "... -> b ...", b=self.B
+                ),
+                self.fc0,
+            )
+            self.fc1 = torch.where(
+                mask,
+                repeat(
+                    self._saved_weights[1].clone().detach(), "... -> b ...", b=self.B
+                ),
+                self.fc1,
+            )
+
+        if self.fc0.requires_grad == False:
+            self.fc0.requires_grad = True
+        if self.fc1.requires_grad == False:
+            self.fc1.requires_grad = True
+
+        self.reset_past_surprise(mask=mask)
 
         # print("weights after reset:")
         # print(self.fc0[0].norm(p=2), self.fc1[0].norm(p=2))
@@ -165,11 +193,21 @@ class MLPMemory(nn.Module):
         self.past_surprise_fc0 = surprise_fc0.clone().detach()
         self.past_surprise_fc1 = surprise_fc1.clone().detach()
 
-    def reset_past_surprise(self):
-        if hasattr(self, "past_surprise_fc0"):
-            del self.past_surprise_fc0
-        if hasattr(self, "past_surprise_fc1"):
-            del self.past_surprise_fc1
+    def reset_past_surprise(self, mask=None):
+        for attr in ["past_surprise_fc0", "past_surprise_fc1"]:
+            if hasattr(self, attr):
+                if mask is not None and mask.shape[0] == self.B:
+                    setattr(
+                        self,
+                        attr,
+                        torch.where(
+                            mask,
+                            torch.zeros_like(getattr(self, attr)),
+                            getattr(self, attr),
+                        ),
+                    )
+                else:
+                    delattr(self, attr)
 
 
 class MemoryModule(nn.Module):
@@ -221,11 +259,11 @@ class MemoryModule(nn.Module):
         for p in (self.w_k, self.w_v, self.w_q):
             nn.init.xavier_uniform_(p)
 
-    def reset_memory(self):
+    def reset_memory(self, mask=None):
         if hasattr(self.current_M, "reset_memory") and callable(
             getattr(self.current_M, "reset_memory")
         ):
-            self.current_M.reset_memory()
+            self.current_M.reset_memory(mask=mask)
         elif self.current_M is None:
             pass
         else:

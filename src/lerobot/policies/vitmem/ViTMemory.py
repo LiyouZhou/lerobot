@@ -170,6 +170,8 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
     def reset(self):
         self.reset_memory()
         self.reset_action_cache()
+        if hasattr(self, "last_frame_indices"):
+            del self.last_frame_indices
 
     def preprocess(self, images):
         raise NotImplementedError("Subclasses should implement this method.")
@@ -181,6 +183,27 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
         # When called from the training loop, x is a batch dict with "action" key
         if isinstance(x, dict):
             input_dict = x
+            batch_size = input_dict["observation.images.image"].shape[0]
+
+            memory_reset_mask = torch.zeros(
+                [batch_size], dtype=torch.bool
+            )  # default no reset
+            loss_mask = torch.ones([batch_size], dtype=torch.bool)
+            if "frame_index" in input_dict.keys():
+                if hasattr(self, "last_frame_indices"):
+                    memory_reset_mask = (
+                        input_dict["frame_index"] != self.last_frame_indices + 1
+                    )
+                    loss_mask = self.last_frame_indices != input_dict["frame_index"]
+                else:
+                    memory_reset_mask = input_dict["frame_index"] == 0
+                self.last_frame_indices = input_dict["frame_index"]
+
+            if torch.any(memory_reset_mask):
+                self.reset_memory(
+                    memory_reset_mask
+                )  # reset memory at the start of each episode
+
             main_image = input_dict["observation.images.image"]
             if main_image.dim() == 5 and main_image.shape[1] == 1:
                 main_image = main_image.squeeze(1)
@@ -207,8 +230,12 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
                     language_instruction=input_dict.get("task", None),
                 )
                 gt_action = input_dict["action"]
-                loss = self.compute_loss(out, gt_action, normalize_gt=False)
-                return loss, {"l1_loss": loss.item()}
+
+                loss = self.compute_loss(
+                    out, gt_action, loss_mask=loss_mask, normalize_gt=False
+                )
+
+                return loss, {"mse_loss": loss.item()}
 
         if self.cfg.proprioception and state is None:
             raise ValueError(
@@ -317,7 +344,7 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
 
         return out, pooled_features
 
-    def compute_loss(self, pred, gt, normalize_gt=True):
+    def compute_loss(self, pred, gt, loss_mask=None, normalize_gt=True):
         if normalize_gt:
             normalized_action = self.normalize(
                 gt[:, :, : self.cfg.action_dim],
@@ -331,6 +358,9 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
         # If GT action is all zeros for a timestep, mask it out from the loss
         # action: (batch, chunk_size, action_dim)
         mask = (gt.abs().sum(dim=-1) != 0).to(pred.device)  # (batch, chunk)
+        if loss_mask is not None:
+            loss_mask = repeat(loss_mask, "b -> b n", n=mask.shape[1])
+            mask = mask & loss_mask.to(pred.device)
         abs_err = torch.abs(pred - normalized_action)  # (batch, chunk, action_dim)
         masked_abs_err = abs_err * mask.unsqueeze(-1).float()
 
@@ -448,10 +478,10 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
         state_dict = load_file(checkpoint_path)
         self.load_state_dict(state_dict)
 
-    def reset_memory(self):
+    def reset_memory(self, reset_mask=None):
         for i in range(self.cfg.num_layers):
             layer = getattr(self, f"layer_{i}")
-            layer.reset_memory()
+            layer.reset_memory(mask=reset_mask)
 
 
 class DecoderWithMemory(nn.Module):
@@ -510,9 +540,9 @@ class DecoderWithMemory(nn.Module):
 
         return output
 
-    def reset_memory(self):
+    def reset_memory(self, mask=None):
         if self.cfg.enable_memory:
-            self.memory.reset_memory()
+            self.memory.reset_memory(mask=mask)
 
 
 class VisionEncoderWithMemory(nn.Module):
@@ -627,8 +657,15 @@ class VisionEncoderWithMemory(nn.Module):
         return self.action_cache
 
     def select_action(self, x):
-        if self.action_cache == []:
+        pred = None
+
+        # update the memory with current observation
+        if self.cfg.enable_memory:
             pred = self.forward(x)
+
+        if self.action_cache == []:
+            if not pred:
+                pred, _ = self.forward(x)
             pred = pred.view(-1, self.cfg.chunk_size, self.cfg.action_dim)
 
             if (self.action_min != 0.0).any():

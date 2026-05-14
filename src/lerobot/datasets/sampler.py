@@ -14,11 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
-import math
-from collections.abc import Iterator
-
 import numpy as np
 import torch
+
+import math
+from collections.abc import Iterator
+from torch.utils.data import numpy as np
+import BatchSampler
 
 logger = logging.getLogger(__name__)
 
@@ -174,3 +176,66 @@ def compute_sampler_state(step: int, num_frames: int, batch_size: int, num_proce
     epoch, batches_into_epoch = divmod(step, batches_per_epoch)
     start_index = min(batches_into_epoch * batch_size * num_processes, num_frames)
     return {"epoch": epoch, "start_index": start_index}
+
+
+class EpisodicBatchSampler(BatchSampler):
+    def __init__(
+        self,
+        batch_size,
+        episode_start_indices,
+        episode_end_indices,
+        shuffle=True,
+    ):
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.episode_start_indices = list(episode_start_indices)
+        self.episode_end_indices = list(episode_end_indices)
+
+        self.frame_indices = [
+            list(range(start, end))
+            for start, end in zip(self.episode_start_indices, self.episode_end_indices)
+        ]
+
+        self.batch_indices = [[] for _ in range(self.batch_size)]
+
+    def __iter__(self):
+        batch = []
+        for i in range(self.batch_size):
+            if len(self.batch_indices[i]) == 0:
+                sampled_episode = self.frame_indices[np.random.randint(len(self.frame_indices))].copy()
+                self.batch_indices[i] = sampled_episode
+            batch.append(self.batch_indices[i].pop(0))
+
+        yield batch
+
+    def __len__(self):
+        return max(self.episode_end_indices)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--repo_root", type=str, required=True, help="Path to the repository root"
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=4, help="Batch size for sampling"
+    )
+    parser.add_argument(
+        "--length", type=int, default=20, help="Number of batches to sample"
+    )
+
+    args = parser.parse_args()
+
+    # Example usage
+    sampler = EpisodicBatchSampler(
+        repo_root=args.repo_root,
+        batch_size=args.batch_size,
+        shuffle=True,
+    )
+
+    for i, batch in enumerate(sampler):
+        print(f"Batch {i}: {batch}")
+        if i >= args.length:
+            break
