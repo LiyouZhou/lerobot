@@ -555,6 +555,11 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
 
             model_initialized = True
 
+            if wandb_logger:
+                import wandb
+
+                wandb.watch(accelerator.unwrap_model(policy), log="all", log_freq=100)
+
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
         step += 1
