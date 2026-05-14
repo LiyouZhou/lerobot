@@ -294,9 +294,7 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
             ]
 
         if language_instruction is not None:
-            instruction_features = self.encode_task_instruction(
-                language_instruction
-            )
+            instruction_features = self.encode_task_instruction(language_instruction)
             instruction_features = rearrange(
                 instruction_features, "b s -> b 1 s"
             )  # (batch_size, 1, hidden_dim)
@@ -788,8 +786,8 @@ class EUPEwMemory(MultiLayerDecoderWithMemory):
                 convert_to_tensor=True,
             )
         # SentenceTransformer may return inference-mode tensors; detach+clone makes a normal tensor.
-        embeddings = embeddings.detach().clone().to(
-            self.sentence_embedding_proj.weight.device
+        embeddings = (
+            embeddings.detach().clone().to(self.sentence_embedding_proj.weight.device)
         )
         features = self.sentence_embedding_proj(embeddings)
 

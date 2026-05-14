@@ -540,16 +540,20 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
             sample_weighter=sample_weighter,
         )
         if not model_initialized and is_main_process:
-                logging.info(colored("Model initialized!", "green", attrs=["bold"]))
-                num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
-                num_total_params = sum(p.numel() for p in policy.parameters())
-                logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
-                logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
+            logging.info(colored("Model initialized!", "green", attrs=["bold"]))
+            num_learnable_params = sum(
+                p.numel() for p in policy.parameters() if p.requires_grad
+            )
+            num_total_params = sum(p.numel() for p in policy.parameters())
+            logging.info(
+                f"{num_learnable_params=} ({format_big_number(num_learnable_params)})"
+            )
+            logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
-                for name, param in policy.named_parameters():
-                    print(name, param.numel(), param.requires_grad)
+            for name, param in policy.named_parameters():
+                print(name, param.numel(), param.requires_grad)
 
-                model_initialized = True
+            model_initialized = True
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
