@@ -20,6 +20,7 @@ Requires: pip install 'lerobot[training]'  (includes dataset + accelerate + wand
 
 import dataclasses
 import logging
+import os
 import time
 from contextlib import nullcontext
 from pprint import pformat
@@ -519,6 +520,7 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
 
     model_initialized = False  # flag to indicate whether the model has done a forward pass (used for lazy initialization in some models)
     for _ in range(step, cfg.steps):
+        os.environ["TRAINING_STEP"] = str(step)
         start_time = time.perf_counter()
         batch = next(dl_iter)
         for cam_key in dataset.meta.camera_keys:
@@ -580,7 +582,7 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
                 step_time = train_tracker.update_s.avg + train_tracker.dataloading_s.avg
                 if step_time > 0:
                     train_tracker.samples_per_s = effective_batch_size / step_time
-                logging.info(train_tracker)
+                # logging.info(train_tracker)
                 if wandb_logger:
                     wandb_log_dict = train_tracker.to_dict()
                     if output_dict:

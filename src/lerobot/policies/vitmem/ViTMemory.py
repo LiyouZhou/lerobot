@@ -235,7 +235,7 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
                     out, gt_action, loss_mask=loss_mask, normalize_gt=False
                 )
 
-                return loss, {"mse_loss": loss.item()}
+                return loss, {"l1_loss": loss.item()}
 
         if self.cfg.proprioception and state is None:
             raise ValueError(
