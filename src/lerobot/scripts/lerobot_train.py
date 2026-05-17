@@ -438,6 +438,7 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
             shuffle=shuffle,
             episode_start_indices=dataset.meta.episodes["dataset_from_index"],
             episode_end_indices=dataset.meta.episodes["dataset_to_index"],
+            frame_interval=cfg.policy.chunk_size
         )
         sampler = None
     else:

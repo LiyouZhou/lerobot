@@ -185,31 +185,37 @@ class EpisodicBatchSampler(BatchSampler):
         episode_start_indices,
         episode_end_indices,
         shuffle=True,
+        frame_interval=1,
     ):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.episode_start_indices = list(episode_start_indices)
         self.episode_end_indices = list(episode_end_indices)
+        self.frame_interval = frame_interval
 
-        self.frame_indices = [
-            list(range(start, end))
-            for start, end in zip(self.episode_start_indices, self.episode_end_indices)
-        ]
+        self.frame_indices = []
+        for start, end in zip(self.episode_start_indices, self.episode_end_indices):
+            # Sample frames at regular intervals within the episode, starting from each possible offset
+            for offset in range(self.frame_interval):
+                self.frame_indices.append(list(range(start + offset, end, self.frame_interval)))
 
         self.batch_indices = [[] for _ in range(self.batch_size)]
 
-    def __iter__(self):
-        batch = []
-        for i in range(self.batch_size):
-            if len(self.batch_indices[i]) == 0:
-                sampled_episode = self.frame_indices[np.random.randint(len(self.frame_indices))].copy()
-                self.batch_indices[i] = sampled_episode
-            batch.append(self.batch_indices[i].pop(0))
+        total_number_of_frames = sum(len(frames) for frames in self.frame_indices)
+        self.dataset_length = int(total_number_of_frames // self.batch_size)
 
-        yield batch
+    def __iter__(self):
+        for _ in range(self.dataset_length):
+            batch = []
+            for i in range(self.batch_size):
+                if len(self.batch_indices[i]) == 0:
+                    sampled_episode = self.frame_indices[np.random.randint(len(self.frame_indices))].copy()
+                    self.batch_indices[i] = sampled_episode
+                batch.append(self.batch_indices[i].pop(0))
+            yield batch
 
     def __len__(self):
-        return max(self.episode_end_indices)
+        return self.dataset_length
 
 
 if __name__ == "__main__":
