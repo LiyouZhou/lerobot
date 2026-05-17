@@ -190,9 +190,12 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
             )  # default no reset
             loss_mask = torch.ones([batch_size], dtype=torch.bool)
             if "frame_index" in input_dict.keys():
-                if hasattr(self, "last_frame_indices"):
+                if (
+                    hasattr(self, "last_frame_indices")
+                    and input_dict["frame_index"].shape == self.last_frame_indices.shape
+                ):
                     memory_reset_mask = (
-                        input_dict["frame_index"] != self.last_frame_indices + 1
+                        input_dict["frame_index"] < self.last_frame_indices
                     )
                     loss_mask = self.last_frame_indices != input_dict["frame_index"]
                 else:
