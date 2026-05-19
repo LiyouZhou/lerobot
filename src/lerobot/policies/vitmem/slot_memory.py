@@ -13,39 +13,46 @@ class SlotMemory(nn.Module):
         self.num_slots = num_slots
 
     def update(self, new_value: torch.Tensor):
-        print("updating memory...")
-        print("new_value shape:", new_value.shape)
         B, L, D = new_value.shape
         if not hasattr(self, "memory"):
-            self.memory = torch.zeros(self.num_slots, B, L, D, device=new_value.device)  # Initialize memory
+            self.memory = torch.zeros(
+                B, self.num_slots, L, D, device=new_value.device
+            )  # Initialize memory
 
         # Update the memory with the new value
         self.value = new_value
-        self.memory = torch.roll(self.memory, shifts=-1)  # Shift memory to the left
-        self.memory[-1] = new_value  # Add new value to the end of memory
+        self.memory = torch.roll(
+            self.memory, shifts=-1, dims=1
+        )  # Shift memory to the left
+        self.memory[:, -1] = new_value  # Add new value to the end of memory
 
     def retrieve(self, new_value: torch.Tensor) -> torch.Tensor:
-        print("retrieving from memory...")
-        print("new_value shape:", new_value.shape)
         B, L, D = new_value.shape
         if not hasattr(self, "memory"):
-            self.memory = torch.zeros(self.num_slots, B, L, D, device=new_value.device)  # Initialize memory
+            self.memory = torch.zeros(
+                B, self.num_slots, L, D, device=new_value.device
+            )  # Initialize memory
 
         # Retrieve the current value from memory
         memory_rearranged = rearrange(
-            self.memory, "n b l d -> b (n l) d"
+            self.memory, "b n l d -> b (n l) d"
         )  # Rearrange memory for attention
 
-        print("new_value shape:", new_value.shape)
-        print("memory_rearranged shape:", memory_rearranged.shape)
-
-        memory_rearranged = memory_rearranged.detach()  # Detach memory to prevent gradients from flowing back
+        memory_rearranged = (
+            memory_rearranged.detach()
+        )  # Detach memory to prevent gradients from flowing back
         attn_output, _ = self.attn(new_value, memory_rearranged, memory_rearranged)
         return attn_output
 
-    def reset_memory(self):
+    def reset_memory(self, mask: torch.Tensor | None = None):
         if hasattr(self, "memory"):
-            del self.memory  # Clear memory when resetting
+            if mask is None or mask.shape[0] != self.memory.shape[0]:
+                del self.memory  # Clear memory when resetting
+            else:
+                mask = rearrange(mask, "b -> b 1 1 1")  # [B, 1, 1, 1]
+                self.memory = torch.where(
+                    mask, torch.zeros_like(self.memory), self.memory
+                )  # Set memory to zero where mask is true
 
 
 if __name__ == "__main__":

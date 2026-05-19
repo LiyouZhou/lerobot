@@ -664,6 +664,8 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
                     wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
                     wandb_logger.log_video(eval_info["overall"]["video_paths"][0], step, mode="eval")
 
+                policy.reset()
+
             accelerator.wait_for_everyone()
 
     if is_main_process:

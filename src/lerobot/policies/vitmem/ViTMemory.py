@@ -170,8 +170,6 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
     def reset(self):
         self.reset_memory()
         self.reset_action_cache()
-        if hasattr(self, "last_frame_indices"):
-            del self.last_frame_indices
 
     def preprocess(self, images):
         raise NotImplementedError("Subclasses should implement this method.")
@@ -486,6 +484,9 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
         self.load_state_dict(state_dict)
 
     def reset_memory(self, reset_mask=None):
+        if hasattr(self, "last_frame_indices"):
+            del self.last_frame_indices
+
         for i in range(self.cfg.num_layers):
             layer = getattr(self, f"layer_{i}")
             layer.reset_memory(mask=reset_mask)
@@ -536,11 +537,16 @@ class DecoderWithMemory(nn.Module):
 
     def forward(self, x):
         if self.cfg.enable_memory:
-            # Memory update uses autograd internally; ensure x has grad even during eval
-            if not x.requires_grad:
-                x = x.detach().requires_grad_(True)
-            self.memory.update(x)
-            out_features = self.memory.retrieve(x)
+            if self.cfg.memory_type == "titan":
+                # Memory update uses autograd internally; ensure x has grad even during eval
+                if not x.requires_grad:
+                    x = x.detach().requires_grad_(True)
+                self.memory.update(x)
+                out_features = self.memory.retrieve(x)
+            elif self.cfg.memory_type == "slot":
+                out_features = self.memory.retrieve(x)
+                out_features = torch.cat([x, out_features], dim=1)
+                self.memory.update(x)
         else:
             out_features = x
 
