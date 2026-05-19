@@ -224,28 +224,33 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
             if state is not None and state.dim() == 3 and state.shape[1] == 1:
                 state = state.squeeze(1)
 
+            out, pooled_features = self._forward_core(
+                x,
+                state,
+                features,
+                language_instruction=input_dict.get("task", None),
+            )
+
             # Training mode: compute loss and return (scalar_loss, info_dict)
             if "action" in input_dict and input_dict["action"] is not None:
-                out, pooled_features = self._forward_core(
-                    x,
-                    state,
-                    features,
-                    language_instruction=input_dict.get("task", None),
-                )
                 gt_action = input_dict["action"]
 
                 loss = self.compute_loss(
                     out, gt_action, loss_mask=loss_mask, normalize_gt=False
                 )
+            else:
+                loss = torch.tensor(0.0, device=out.device)
 
-                return loss, {"l1_loss": loss.item()}
+            return loss, {"l1_loss": loss.item(), "pred": out}
 
         if self.cfg.proprioception and state is None:
             raise ValueError(
                 "Proprioception is enabled but no state input is provided."
             )
 
-        return self._forward_core(x, state, features, language_instruction=None)
+        out, _ = self._forward_core(x, state, features, language_instruction=None)
+        loss = torch.tensor(0.0, device=out[0].device)
+        return loss, {"l1_loss": loss.item(), "pred": out}
 
     def _forward_core(self, x, state=None, features=None, language_instruction=None):
         if self.cfg.proprioception and state is None:
@@ -341,7 +346,7 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
             self.model_initialised = True
             self.reset_memory()
             self.reset_action_cache()
-            return self._forward_core(x)
+            return self._forward_core(x, state, features, language_instruction)
 
         return out, pooled_features
 
@@ -437,7 +442,8 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
 
     def select_action(self, x, state=None, world_frame=False):
         if self.action_cache == []:
-            pred, _ = self.forward(x, state)
+            loss, info_dict = self.forward(x, state)
+            pred = info_dict["pred"]
             pred = pred.view(-1, self.cfg.chunk_size, self.cfg.action_dim)
 
             if (self.action_min != 0.0).any():
@@ -483,6 +489,13 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
         for i in range(self.cfg.num_layers):
             layer = getattr(self, f"layer_{i}")
             layer.reset_memory(mask=reset_mask)
+
+    @classmethod
+    def _load_as_safetensor(
+        cls, model, model_file: str, map_location: str, strict: bool
+    ):
+        model.cfg.pre_trained_weights = model_file
+        return model
 
 
 class DecoderWithMemory(nn.Module):
