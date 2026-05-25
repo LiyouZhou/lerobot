@@ -545,8 +545,9 @@ class DecoderWithMemory(nn.Module):
                 out_features = self.memory.retrieve(x)
             elif self.cfg.memory_type == "slot":
                 out_features = self.memory.retrieve(x)
-                out_features = torch.cat([x, out_features], dim=1)
                 self.memory.update(x)
+
+            out_features += x
         else:
             out_features = x
 
