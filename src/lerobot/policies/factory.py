@@ -515,7 +515,15 @@ def make_policy(
             "Please use `cpu` or `cuda` backend."
         )
 
-    policy_cls = get_policy_class(cfg.type)
+    if cfg.type == "vitmem":
+        from .vitmem.ViTMemory import CLIPwMemory, EUPEwMemory
+
+        if getattr(cfg, "vision_backbone", "eupe") == "clip":
+            policy_cls = CLIPwMemory
+        else:
+            policy_cls = EUPEwMemory
+    else:
+        policy_cls = get_policy_class(cfg.type)
 
     kwargs = {}
     if ds_meta is not None:

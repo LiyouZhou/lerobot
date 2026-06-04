@@ -10,7 +10,14 @@ from tqdm import trange
 import timm
 from timm.data import resolve_data_config
 from timm.data.transforms_factory import create_transform
-from transformers import AutoImageProcessor, AutoModel
+from transformers import (
+    AutoImageProcessor,
+    AutoModel,
+    AutoTokenizer,
+    CLIPImageProcessor,
+    CLIPTextModel,
+    CLIPVisionModel,
+)
 from safetensors.torch import load_file
 from dataclasses import dataclass, asdict
 import os
@@ -815,6 +822,102 @@ class EUPEwMemory(MultiLayerDecoderWithMemory):
         features = self.sentence_embedding_proj(embeddings)
 
         return features
+
+
+class CLIPwMemory(MultiLayerDecoderWithMemory):
+    def __init__(
+        self,
+        model_name="openai/clip-vit-base-patch16",
+        *args,
+        **kwargs,
+    ):
+        super(CLIPwMemory, self).__init__(*args, **kwargs)
+
+        self.model_name = model_name
+        self.vision_processor = CLIPImageProcessor.from_pretrained(model_name, use_fast=True)
+        self.vision_encoder = CLIPVisionModel.from_pretrained(model_name)
+        self.text_tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        self.text_encoder = CLIPTextModel.from_pretrained(model_name)
+
+        vision_embed_dim = self.vision_encoder.config.hidden_size
+        text_embed_dim = self.text_encoder.config.hidden_size
+
+        self.vision_projection = (
+            nn.Identity()
+            if vision_embed_dim == self.cfg.memory_size
+            else nn.Linear(vision_embed_dim, self.cfg.memory_size)
+        )
+        self.text_projection = nn.Linear(text_embed_dim, self.cfg.memory_size)
+
+        self.freeze_text_encoder()
+        if not self.cfg.train_vision_encoder:
+            self.freeze_vision_encoder()
+
+    def preprocess(self, images):
+        inputs = self.vision_processor(images=images, return_tensors="pt", do_rescale=True)
+        return inputs["pixel_values"]
+
+    def encode(self, x):
+        outputs = self.vision_encoder(pixel_values=x)
+        return self.vision_projection(outputs.last_hidden_state)
+
+    def encode_task_instruction(self, instruction_sentences):
+        tokenized = self.text_tokenizer(
+            instruction_sentences,
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+        )
+        tokenized = {k: v.to(self.text_projection.weight.device) for k, v in tokenized.items()}
+
+        with torch.inference_mode():
+            text_outputs = self.text_encoder(**tokenized)
+            pooled_features = text_outputs.pooler_output
+
+        pooled_features = pooled_features.detach().clone()
+        return self.text_projection(pooled_features)
+
+    def freeze_vision_encoder(self):
+        self.vision_encoder.eval()
+        for p in self.vision_encoder.parameters():
+            p.requires_grad = False
+
+    def freeze_text_encoder(self):
+        self.text_encoder.eval()
+        for p in self.text_encoder.parameters():
+            p.requires_grad = False
+
+    def train(self, mode=True):
+        super().train(mode)
+        self.freeze_text_encoder()
+        if not self.cfg.train_vision_encoder:
+            self.freeze_vision_encoder()
+
+        return self
+
+    def get_optim_params(self) -> list:
+        non_vision_params = []
+        vision_encoder_params = []
+
+        for name, param in self.named_parameters():
+            if not param.requires_grad:
+                continue
+
+            if name.startswith("vision_encoder."):
+                vision_encoder_params.append(param)
+            else:
+                non_vision_params.append(param)
+
+        param_groups = [{"params": non_vision_params}]
+        if vision_encoder_params:
+            param_groups.append(
+                {
+                    "params": vision_encoder_params,
+                    "lr": self.cfg.optimizer_lr * self.cfg.vision_encoder_lr_multiplier,
+                }
+            )
+
+        return param_groups
 
 
 class ViTwMemory(VisionEncoderWithMemory):

@@ -35,6 +35,9 @@ class ViTMemoryConfig(PreTrainedConfig):
 
     optimizer_lr: float = 1e-4
     optimizer_weight_decay: float = 0.01
+    vision_backbone: str = "eupe"
+    train_vision_encoder: bool = False
+    vision_encoder_lr_multiplier: float = 1.0
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
