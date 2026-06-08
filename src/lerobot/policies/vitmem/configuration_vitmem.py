@@ -47,6 +47,10 @@ class ViTMemoryConfig(PreTrainedConfig):
         }
     )
 
+    vision_token_cls_only: bool = (
+        False  # If True, only use the [CLS] token from the vision encoder output as the visual feature
+    )
+
     def __post_init__(self):
         super().__post_init__()
 

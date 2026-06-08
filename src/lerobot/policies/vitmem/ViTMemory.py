@@ -306,6 +306,9 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
                 features[batch_size:],
             ]
 
+        if self.cfg.vision_token_cls_only:
+            features_list = [f[:, :1] for f in features_list]
+
         if language_instruction is not None:
             instruction_features = self.encode_task_instruction(language_instruction)
             instruction_features = rearrange(
