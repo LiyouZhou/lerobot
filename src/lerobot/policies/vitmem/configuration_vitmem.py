@@ -50,6 +50,12 @@ class ViTMemoryConfig(PreTrainedConfig):
     vision_token_cls_only: bool = (
         False  # If True, only use the [CLS] token from the vision encoder output as the visual feature
     )
+    pre_transformer_pooling_method: str | None = (
+        "mean"  # "mean", "max", or None (no pooling, use all tokens)
+    )
+    pre_transformer_project: bool = (
+        True  # If True, project the features before the transformer
+    )
 
     def __post_init__(self):
         super().__post_init__()

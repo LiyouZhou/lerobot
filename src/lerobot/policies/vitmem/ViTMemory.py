@@ -327,9 +327,11 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
 
         features = torch.cat(features_list, dim=1)
 
-        projected_features = self.input_projection(features)
-        pooled_features = projected_features.mean(dim=1, keepdim=True)
-        features = pooled_features
+        if self.cfg.pre_transformer_project:
+            features = self.input_projection(features)
+
+        if self.cfg.pre_transformer_pooling_method == "mean":
+            features = features.mean(dim=1, keepdim=True)
 
         for i in range(self.cfg.num_layers):
             layer = getattr(self, f"layer_{i}")
