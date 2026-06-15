@@ -163,7 +163,9 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
         )  # state_dim -> memory_size
 
         if self.cfg.pooling_method == "attention":
-            self.attention_pool = AttentionPool(self.cfg.memory_size, 2)
+            self.attention_pool = AttentionPool(
+                self.cfg.memory_size, self.cfg.attn_pool_num_tokens
+            )
 
         self.model_initialised = False
 

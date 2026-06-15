@@ -29,6 +29,7 @@ class ViTMemoryConfig(PreTrainedConfig):
     num_state_tokens: int = 16
     proprioception: bool = False
     pooling_method: str = "attention"  # "attention", "mean", "max", or None
+    attn_pool_num_tokens: int = 8
     main_camera_only: bool = (
         False  # If True, only use the main camera image and ignore the secondary camera
     )
