@@ -554,7 +554,7 @@ class DecoderWithMemory(nn.Module):
             if self.cfg.memory_type == "titan":
                 # Memory update uses autograd internally; ensure x has grad even during eval
                 if not x.requires_grad:
-                    x = x.detach().requires_grad_(True)
+                    x = x.requires_grad_(True)
                 self.memory.update(x)
                 out_features = self.memory.retrieve(x)
             elif self.cfg.memory_type == "slot":
@@ -565,13 +565,16 @@ class DecoderWithMemory(nn.Module):
         else:
             out_features = x
 
+        # attention
         normalized_out_features = self.pre_attn_layer_norm(out_features)
         transformer_out, _ = self.attn(
             normalized_out_features, normalized_out_features, normalized_out_features
         )
-        transformer_out += normalized_out_features
+        transformer_out += out_features
+
+        # feedforward
         normed_transformer_out = self.pre_ffn_layer_norm(transformer_out)
-        output = normed_transformer_out + self.ffn(normed_transformer_out)
+        output = transformer_out + self.ffn(normed_transformer_out)
 
         return output
 
