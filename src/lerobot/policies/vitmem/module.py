@@ -181,6 +181,8 @@ class MLPMemory(nn.Module):
                 {
                     "mem_debug/fc0_grad_norm": fc0_grad.norm(p=2).mean().item(),
                     "mem_debug/fc1_grad_norm": fc1_grad.norm(p=2).mean().item(),
+                    "mem_debug/fc0_weight_norm": self.fc0.norm(p=2).mean().item(),
+                    "mem_debug/fc1_weight_norm": self.fc1.norm(p=2).mean().item(),
                     "mem_debug/decay_factor_mean": decay_factor.mean().item(),
                     "mem_debug/adaptive_lr_mean": adaptive_lr.mean().item(),
                 },
@@ -304,7 +306,6 @@ class MemoryModule(nn.Module):
         input_dtype = x.dtype
         x = x.to(dtype=self.w_k.dtype)
 
-        # 1) run all inner‐loop math in half precision
         with torch.enable_grad():
             K = x @ self.w_k.t()  # [B, L, D]
             V = x @ self.w_v.t()  # [B, L, D]
@@ -330,6 +331,16 @@ class MemoryModule(nn.Module):
 
         # self.cached_adaptive_lr = adaptive_rl.clone().detach()
         # self.cached_out_value = out_value.clone().detach()
+
+        if wandb.run is not None:
+            wandb.log(
+                {
+                    "mem_debug/w_k_norm": self.w_k.norm(p=2).item(),
+                    "mem_debug/w_v_norm": self.w_v.norm(p=2).item(),
+                    "mem_debug/w_q_norm": self.w_q.norm(p=2).item(),
+                },
+                step=int(os.environ.get("TRAINING_STEP", 0)),
+            )
 
         # All parameters are initialized after the first forward pass
         if not self.initialised:

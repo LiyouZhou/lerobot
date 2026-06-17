@@ -358,7 +358,7 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
             self.model_initialised = True
             self.reset_memory()
             self.reset_action_cache()
-            return self._forward_core(x, state, features, language_instruction)
+            return self._forward_core(x, state, None, language_instruction)
 
         return out, pooled_features
 
@@ -844,7 +844,9 @@ class CLIPwMemory(MultiLayerDecoderWithMemory):
         super(CLIPwMemory, self).__init__(*args, **kwargs)
 
         self.model_name = model_name
-        self.vision_processor = CLIPImageProcessor.from_pretrained(model_name, use_fast=True)
+        self.vision_processor = CLIPImageProcessor.from_pretrained(
+            model_name, use_fast=True
+        )
         self.vision_encoder = CLIPVisionModel.from_pretrained(model_name)
         self.text_tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
         self.text_encoder = CLIPTextModel.from_pretrained(model_name)
@@ -864,7 +866,9 @@ class CLIPwMemory(MultiLayerDecoderWithMemory):
             self.freeze_vision_encoder()
 
     def preprocess(self, images):
-        inputs = self.vision_processor(images=images, return_tensors="pt", do_rescale=True)
+        inputs = self.vision_processor(
+            images=images, return_tensors="pt", do_rescale=True
+        )
         return inputs["pixel_values"]
 
     def encode(self, x):
@@ -878,7 +882,9 @@ class CLIPwMemory(MultiLayerDecoderWithMemory):
             truncation=True,
             return_tensors="pt",
         )
-        tokenized = {k: v.to(self.text_projection.weight.device) for k, v in tokenized.items()}
+        tokenized = {
+            k: v.to(self.text_projection.weight.device) for k, v in tokenized.items()
+        }
 
         with torch.inference_mode():
             text_outputs = self.text_encoder(**tokenized)
@@ -967,6 +973,7 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import wandb
     import os
+    import itertools
 
     training_data = datasets.FashionMNIST(
         root="data", train=True, download=True, transform=ToTensor()
@@ -983,6 +990,8 @@ if __name__ == "__main__":
     cfg = ViTMemoryConfig(
         enable_memory=enable_memory,
         main_camera_only=True,
+        num_layers=8,
+        inner_lr=0.01,
     )
 
     model = EUPEwMemory(config=cfg)
@@ -998,7 +1007,7 @@ if __name__ == "__main__":
     dataloader = torch.utils.data.DataLoader(
         training_data, batch_size=batch_size, shuffle=True
     )
-    dataloader_iter = iter(dataloader)
+    dataloader_iter = itertools.cycle(dataloader)
 
     n_steps = 10000
 
@@ -1011,6 +1020,7 @@ if __name__ == "__main__":
         "episode_length": episode_length,
         "model_name": "vit_base_patch16_224",
         "enable_memory": enable_memory,
+        "model": cfg,
     }
     wandb.init(project="vit-memory-selftest", config=config)
 
@@ -1037,7 +1047,9 @@ if __name__ == "__main__":
             if gt == []:
                 gt = labels
 
-            pred, _ = model(imgs.to("cuda"))
+            _, info = model(imgs.to("cuda"))
+            pred = info["pred"]
+            # print("pred.shape", pred.shape, pred)
             loss = nn.CrossEntropyLoss()(pred, gt.to("cuda"))
 
             loss.backward()
@@ -1057,6 +1069,18 @@ if __name__ == "__main__":
                 },
                 step=i,
             )
+
+            for layer_idx in range(cfg.num_layers):
+                layer = getattr(model, f"layer_{layer_idx}")
+                if hasattr(layer, "memory"):
+                    wandb.log(
+                        {
+                            f"memory_debug/layer_{layer_idx}/w_k": layer.memory.w_k.norm(p=2).item(),
+                            f"memory_debug/layer_{layer_idx}/w_v": layer.memory.w_v.norm(p=2).item(),
+                            f"memory_debug/layer_{layer_idx}/w_q": layer.memory.w_q.norm(p=2).item(),
+                        },
+                        step=i,
+                    )
 
             loss_window.append(loss_value)
             accuracy_window.append(accuracy.item())
