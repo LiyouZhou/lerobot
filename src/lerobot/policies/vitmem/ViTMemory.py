@@ -110,9 +110,9 @@ class InputFeatureProjection(nn.Module):
         attn_out, _ = self.attn(
             normalized_features, normalized_features, normalized_features
         )
-        features += attn_out
+        features = features + attn_out
         normed_attn_out = self.pre_ffn_layer_norm(features)
-        features += self.ffn(normed_attn_out)
+        features = features + self.ffn(normed_attn_out)
 
         return features
 
