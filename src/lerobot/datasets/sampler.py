@@ -14,13 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
-import numpy as np
-import torch
-
 import math
 from collections.abc import Iterator
-from torch.utils.data import numpy as np
-import BatchSampler
+
+import numpy as np
+import torch
+from torch.utils.data import BatchSampler
 
 logger = logging.getLogger(__name__)
 
