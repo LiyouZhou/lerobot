@@ -190,7 +190,7 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
         # When called from the training loop, x is a batch dict with "action" key
         if isinstance(x, dict):
             input_dict = x
-            batch_size = input_dict["observation.images.image"].shape[0]
+            batch_size = input_dict[self.cfg.main_camera_key].shape[0]
 
             memory_reset_mask = torch.zeros(
                 [batch_size], dtype=torch.bool
@@ -214,11 +214,11 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
                     memory_reset_mask
                 )  # reset memory at the start of each episode
 
-            main_image = input_dict["observation.images.image"]
+            main_image = input_dict[self.cfg.main_camera_key]
             if main_image.dim() == 5 and main_image.shape[1] == 1:
                 main_image = main_image.squeeze(1)
 
-            secondary_image = input_dict["observation.images.image2"]
+            secondary_image = input_dict[self.cfg.secondary_camera_key]
             if secondary_image.dim() == 5 and secondary_image.shape[1] == 1:
                 secondary_image = secondary_image.squeeze(1)
 

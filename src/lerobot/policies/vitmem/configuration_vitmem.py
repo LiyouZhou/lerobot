@@ -58,6 +58,9 @@ class ViTMemoryConfig(PreTrainedConfig):
         True  # If True, project the features before the transformer
     )
 
+    main_camera_key: str = "observation.images.image"
+    secondary_camera_key: str = "observation.images.image2"
+
     def __post_init__(self):
         super().__post_init__()
 
