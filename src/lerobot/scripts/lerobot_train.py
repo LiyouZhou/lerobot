@@ -390,7 +390,18 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
         logging.info(f"Effective batch size: {cfg.batch_size} x {num_processes} = {effective_bs}")
 
     # create dataloader for offline training
-    if not cfg.dataset.streaming:
+    if cfg.dataset.episodic:
+        logging.info("Using EpisodicBatchSampler for episodic dataset")
+        shuffle = False
+        batch_sampler = EpisodicBatchSampler(
+            batch_size=cfg.batch_size,
+            shuffle=shuffle,
+            episode_start_indices=dataset.meta.episodes["dataset_from_index"],
+            episode_end_indices=dataset.meta.episodes["dataset_to_index"],
+            frame_interval=cfg.policy.chunk_size
+        )
+        sampler = None
+    elif not cfg.dataset.streaming:
         # All non-streaming (map-style) datasets use EpisodeAwareSampler.
         # The order is a pure function of (seed, epoch), so every rank independently produces the
         # same permutation. accelerate then shards it disjointly across ranks via BatchSamplerShard
@@ -432,16 +443,6 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
                     f"sample {sampler_state['start_index']}"
                 )
         batch_sampler = None
-    elif cfg.dataset.episodic:
-        shuffle = False
-        batch_sampler = EpisodicBatchSampler(
-            batch_size=cfg.batch_size,
-            shuffle=shuffle,
-            episode_start_indices=dataset.meta.episodes["dataset_from_index"],
-            episode_end_indices=dataset.meta.episodes["dataset_to_index"],
-            frame_interval=cfg.policy.chunk_size
-        )
-        sampler = None
     else:
         shuffle = True
         sampler = None
@@ -528,6 +529,10 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
                 batch[cam_key] = batch[cam_key].to(dtype=torch.float32) / 255.0
 
         frame_indices = batch["frame_index"]
+
+        for old_key, new_key in cfg.rename_map.items():
+            if old_key in batch:
+                batch[new_key] = batch.pop(old_key)
         batch = preprocessor(batch)
         train_tracker.dataloading_s = time.perf_counter() - start_time
         batch["frame_index"] = frame_indices
