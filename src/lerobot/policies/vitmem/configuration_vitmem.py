@@ -33,6 +33,9 @@ class ViTMemoryConfig(PreTrainedConfig):
     main_camera_only: bool = (
         False  # If True, only use the main camera image and ignore the secondary camera
     )
+    wrist_camera_only: bool = (
+        False  # If True, only use the wrist (secondary) camera image and ignore the main camera
+    )
 
     optimizer_lr: float = 1e-4
     optimizer_weight_decay: float = 0.01
@@ -63,6 +66,11 @@ class ViTMemoryConfig(PreTrainedConfig):
 
     def __post_init__(self):
         super().__post_init__()
+        if self.main_camera_only and self.wrist_camera_only:
+            raise ValueError(
+                "`main_camera_only` and `wrist_camera_only` cannot both be True. "
+                "Set both to False to use both cameras."
+            )
 
     def validate_features(self) -> None:
         pass

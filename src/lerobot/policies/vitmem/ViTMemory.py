@@ -190,7 +190,10 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
         # When called from the training loop, x is a batch dict with "action" key
         if isinstance(x, dict):
             input_dict = x
-            batch_size = input_dict[self.cfg.main_camera_key].shape[0]
+            if self.cfg.wrist_camera_only:
+                batch_size = input_dict[self.cfg.secondary_camera_key].shape[0]
+            else:
+                batch_size = input_dict[self.cfg.main_camera_key].shape[0]
 
             memory_reset_mask = torch.zeros(
                 [batch_size], dtype=torch.bool
@@ -214,15 +217,20 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
                     memory_reset_mask
                 )  # reset memory at the start of each episode
 
-            main_image = input_dict[self.cfg.main_camera_key]
-            if main_image.dim() == 5 and main_image.shape[1] == 1:
-                main_image = main_image.squeeze(1)
+            images = []
+            for key in (self.cfg.main_camera_key, self.cfg.secondary_camera_key):
+                image = input_dict[key]
+                if image.dim() == 5 and image.shape[1] == 1:
+                    image = image.squeeze(1)
+                images.append(image)
 
-            secondary_image = input_dict[self.cfg.secondary_camera_key]
-            if secondary_image.dim() == 5 and secondary_image.shape[1] == 1:
-                secondary_image = secondary_image.squeeze(1)
+            if self.cfg.wrist_camera_only:
+                x = images[1]
+            elif self.cfg.main_camera_only:
+                x = images[0]
+            else:
+                x = torch.cat([images[0], images[1]], dim=1)
 
-            x = torch.cat([main_image, secondary_image], dim=1)
             state = (
                 input_dict["observation.state"]
                 if "observation.state" in input_dict
@@ -266,13 +274,19 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
             )
 
         batch_size = x.shape[0]
+        single_camera = self.cfg.main_camera_only or self.cfg.wrist_camera_only
 
         if features is None:
-            main_image = x[:, :3]
-            if self.cfg.main_camera_only:
-                images = main_image
+            if single_camera:
+                # x may be a single 3-channel image, or a 6-channel stack when the
+                # policy is called directly with a raw tensor. Pick the selected camera.
+                if x.shape[1] == 6:
+                    images = x[:, 3:6] if self.cfg.wrist_camera_only else x[:, :3]
+                else:
+                    images = x
             else:
                 # concatinate main and secondary images along the batch dimension for joint processing
+                main_image = x[:, :3]
                 secondary_image = x[:, 3:6]
                 images = torch.cat(
                     [main_image, secondary_image], dim=0
@@ -285,7 +299,7 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
                 processed_cuda
             )  # (2*batch_size, embed_len, hidden_dim)
         else:
-            if self.cfg.main_camera_only:
+            if single_camera:
                 features = features[:batch_size]
 
         # pool vision tokens if specified in config
@@ -300,7 +314,7 @@ class MultiLayerDecoderWithMemory(PreTrainedPolicy):
             features, _ = features.max(dim=1, keepdim=True)
 
         # split back into two tensors
-        if self.cfg.main_camera_only:
+        if single_camera:
             features_list = [features]
         else:
             features_list = [
@@ -715,7 +729,7 @@ class VisionEncoderWithMemory(nn.Module):
             else:
                 unnormalized_pred = pred.clone().detach().cpu()
 
-            for i in range(self.cfg.chunk_size):
+            for i in range(self.cfg.n_action_steps):
                 self.action_cache.append(unnormalized_pred[:, i, :])
 
         return self.action_cache.pop(0)
@@ -1075,9 +1089,15 @@ if __name__ == "__main__":
                 if hasattr(layer, "memory"):
                     wandb.log(
                         {
-                            f"memory_debug/layer_{layer_idx}/w_k": layer.memory.w_k.norm(p=2).item(),
-                            f"memory_debug/layer_{layer_idx}/w_v": layer.memory.w_v.norm(p=2).item(),
-                            f"memory_debug/layer_{layer_idx}/w_q": layer.memory.w_q.norm(p=2).item(),
+                            f"memory_debug/layer_{layer_idx}/w_k": layer.memory.w_k.norm(
+                                p=2
+                            ).item(),
+                            f"memory_debug/layer_{layer_idx}/w_v": layer.memory.w_v.norm(
+                                p=2
+                            ).item(),
+                            f"memory_debug/layer_{layer_idx}/w_q": layer.memory.w_q.norm(
+                                p=2
+                            ).item(),
                         },
                         step=i,
                     )
